@@ -103,6 +103,14 @@ This is a symlink. Reading it yields a path relative to the sysfs entry, resolvi
 `i2c-N` adapter directory. The device node is then `/dev/i2c-N` where `N` is the adapter
 index extracted from the symlink target.
 
+**Parsing strategy.** Only the final path component of the symlink target is examined.
+It must match the pattern `i2c-<N>` where `<N>` is a decimal integer; the prefix (`../..`
+or otherwise) is ignored. This makes the implementation robust to changes in the number of
+`..` components or the absolute sysfs path structure — only the final component is
+load-bearing. If the final component does not match `i2c-<N>`, the function returns
+`DdcAdapterIndexUnparseable { symlink_target }` with the full symlink target preserved for
+diagnostics. The function does not panic on malformed targets.
+
 `connector_ddc_adapter` performs this resolution:
 
 ```rust
