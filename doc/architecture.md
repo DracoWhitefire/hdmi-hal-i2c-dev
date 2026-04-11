@@ -189,6 +189,17 @@ impl ScdcTransport for I2cDevTransport {
 }
 ```
 
+**Error recovery policy.** A `Transaction` error does not invalidate the transport. The
+file descriptor remains open and the next call may succeed — transient bus conditions
+(glitches, brief clock stretching) do not corrupt any transport state. The caller may
+retry immediately.
+
+If errors persist, the sink has most likely disconnected. There is no `is_connected()`
+method and, due to the `amdgpu` driver collapsing all transaction failures to `EIO`, a
+disconnect is indistinguishable from a persistent bus error at the API level. The
+caller should drop the transport and reconstruct it — via `connector_ddc_adapter` +
+`open`, or via `from_file` if controlling the fd lifecycle externally.
+
 ### `StubPhy<F>`
 
 Implements `HdmiPhy` with a caller-supplied callback. Each method constructs a `PhyCall`
