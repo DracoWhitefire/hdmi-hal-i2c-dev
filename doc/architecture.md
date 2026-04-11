@@ -173,12 +173,54 @@ The error type for all fallible operations in this crate.
 pub enum I2cDevError {
     /// The specified DRM connector was not found in sysfs.
     ConnectorNotFound { connector: String },
-    /// The `ddc` sysfs symlink could not be read or its target was not recognizable.
-    DdcSymlinkUnreadable { path: PathBuf, source: io::Error },
+    /// The connector exists in sysfs but has no `ddc` symlink.
+    /// Common for non-HDMI connectors and HDMI ports with no sink attached.
+    ConnectorHasNoDdcAdapter { connector: String },
+    /// The `ddc` symlink exists but its target does not contain a recognizable
+    /// adapter index. This indicates an unexpected sysfs layout.
+    DdcAdapterIndexUnparseable { symlink_target: PathBuf },
     /// The `/dev/i2c-N` device could not be opened.
     DeviceOpenFailed { path: PathBuf, source: io::Error },
     /// An I²C transaction failed.
-    TransactionFailed { source: io::Error },
+    Transaction(I2cTransactionError),
+}
+
+/// The phase and kind of an I²C transaction failure.
+pub struct I2cTransactionError {
+    pub phase: MessagePhase,
+    pub kind: I2cErrorKind,
+}
+
+/// Which message in the compound SCDC transaction failed.
+pub enum MessagePhase {
+    /// The write-phase message failed (register address byte, or write data).
+    Write { register: u8 },
+    /// The read-phase message failed (data retrieval).
+    Read { register: u8 },
+}
+
+/// The class of I²C bus condition that caused the failure.
+///
+/// Variants follow the conventions in `Documentation/i2c/fault-codes.rst`.
+/// See the note on `amdgpu` below for current hardware limitations.
+#[non_exhaustive]
+pub enum I2cErrorKind {
+    /// The slave did not acknowledge its I²C address byte (`ENXIO`).
+    AddressNack,
+    /// The slave acknowledged its address but NACKed a data byte.
+    DataNack,
+    /// Arbitration was lost to another bus master (`EAGAIN`). Retry is appropriate.
+    ArbitrationLost,
+    /// The slave held SCL low beyond the adapter timeout threshold (`ETIMEDOUT`).
+    ClockStretchTimeout,
+    /// The bus was busy and the transaction could not be started (`EBUSY`).
+    BusBusy,
+    /// An unexpected START or STOP condition was observed on the bus (`EPROTO`).
+    BusProtocolError,
+    /// The I²C adapter was suspended or removed (`ESHUTDOWN`/`ENODEV`).
+    AdapterGone,
+    /// An errno that does not map to any known I²C condition.
+    Unknown { errno: i32 },
 }
 ```
 
@@ -195,6 +237,26 @@ read/write permission on the device node (typically via the `i2c` group).
 
 The SCDC slave address (0x54) is fixed by the HDMI specification. This crate does not
 expose it as a parameter.
+
+#### errno mapping and the `amdgpu` limitation
+
+The Linux I²C subsystem specifies a standard errno vocabulary for distinct bus conditions
+(`Documentation/i2c/fault-codes.rst`): `ENXIO` for address-phase NACK, `EAGAIN` for
+arbitration loss, `ETIMEDOUT` for timeout, `EBUSY` for bus-busy. `I2cErrorKind` is
+designed against this specification.
+
+In practice, the `amdgpu` DDC adapter does not follow this convention. Tracing the call
+chain from `amdgpu_dm_i2c_xfer` through `dc_submit_i2c` and `dce_i2c_submit_command_hw`
+shows that all `i2c_channel_operation_result` values — `NO_RESPONSE` (NACK), `TIMEOUT`,
+`ENGINE_BUSY`, `OUT_NB_OF_RETRIES`, and all others — are collapsed to a boolean at each
+layer boundary. `amdgpu_dm_i2c_xfer` maps `false` unconditionally to `-EIO`. Every
+transaction failure surfaces as `EIO` regardless of the actual bus condition.
+
+On `amdgpu`, `I2cTransactionError::kind` will always be `Unknown { errno: EIO }`.
+The named variants (`AddressNack`, `Timeout`, etc.) are unreachable on this hardware. This
+is a driver deficiency — the driver has the information internally and discards it — not a
+kernel interface limitation. The richer variant set is retained because it is correct per
+the kernel specification and meaningful on compliant adapters.
 
 ### Above: `hdmi-hal` traits
 
