@@ -76,10 +76,14 @@ it.
 
 ```
 hdmi-hal  ──►  hdmi-hal-i2c-dev
+i2cdev    ──►  hdmi-hal-i2c-dev
 ```
 
 - `hdmi-hal` — `ScdcTransport`, `HdmiPhy`, `EqParams`, `LtpPattern`
-- `std` — file I/O, sysfs path resolution, I²C device access
+- `i2cdev` — safe Rust wrappers over the Linux `i2c-dev` kernel interface; provides the
+  `I2C_RDWR` ioctl binding that backs `I2cDevTransport`. This is what allows
+  `#![forbid(unsafe_code)]` to hold: all unsafe is contained inside `i2cdev`.
+- `std` — file I/O, sysfs path resolution
 
 This crate is `std`-only. It has no `no_std` or `alloc` story: its entire purpose is to
 interact with the Linux kernel via the filesystem and ioctl interface.
@@ -363,7 +367,8 @@ which requires `std`. Any caller that needs `no_std` link training must supply t
   `i2c-dev`, and stub `HdmiPhy`. Discovery helpers are included because they are inseparable
   from usability, not because this is a general-purpose DRM sysfs library.
 - **No unsafe code.** `#![forbid(unsafe_code)]`. I²C device access is performed through
-  safe Rust wrappers over the kernel interface.
+  `i2cdev`, which provides safe Rust wrappers over the `i2c-dev` kernel interface. All
+  unsafe is contained within that crate.
 - **Structured errors.** `I2cDevError` distinguishes connector-not-found from device
   open failure from transaction failure. A caller diagnosing a problem can act on the
   variant rather than parsing an error message.
