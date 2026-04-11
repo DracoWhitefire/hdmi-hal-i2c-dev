@@ -57,6 +57,19 @@ The following are out of scope:
 - **Hotplug detection** — this crate opens a device, uses it, and closes it. Monitoring
   for connector state changes is out of scope.
 
+`connector_ddc_adapter` is included here for pragmatic reasons, not because it is
+correctly scoped. The function resolves a DRM connector name to a device path via sysfs —
+an operation with no dependency on SCDC, I²C transactions, or address 0x54. Any tool that
+needs DDC bus access for any purpose (EDID reads, CEC, or anything else) requires the same
+lookup. Placing it here forces those callers to depend on an SCDC implementation crate to
+obtain a general utility function.
+
+It lives here because there is currently no second consumer. When a second crate in this
+stack needs DDC adapter resolution — or when `piaf` or any other crate needs to locate a
+DDC bus without going through SCDC — `connector_ddc_adapter` should move to a dedicated
+`linux-drm` (or similarly named) utility crate, and this crate should take a dependency on
+it.
+
 ---
 
 ## Dependencies
