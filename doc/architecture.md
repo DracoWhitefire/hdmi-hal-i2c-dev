@@ -413,6 +413,12 @@ configurable root, then calls `connector_ddc_adapter` with that root substituted
 - `ConnectorHasNoDdcAdapter` when the connector exists but has no `ddc` symlink,
 - `DdcAdapterIndexUnparseable` when the symlink target is malformed.
 
+**`I2cErrorKind` mapping** is tested as a unit test against the internal function that
+maps `LinuxI2CError` values to `I2cTransactionError`. Specific `LinuxI2CError::Errno`
+values are constructed directly and the output variant is asserted. This covers every
+named `I2cErrorKind` variant and the `Unknown { errno }` fallback without kernel
+involvement.
+
 No kernel involvement. Runs in CI on any Linux host.
 
 ### Tier 2: `i2c-stub` integration tests
@@ -426,12 +432,19 @@ This tier validates:
 - correct compound message construction for SCDC reads (write-then-read in a single ioctl),
 - correct single-message construction for SCDC writes,
 - slave address 0x54 is set on all messages,
-- `I2cTransactionError` is produced when the stub is configured to NACK.
+- `AddressNack` is produced when a transaction targets an address not registered with
+  the stub.
 
 These tests require `i2c-stub` to be loaded (`modprobe i2c-stub`) and the calling process
 to have write permission on the resulting device node. They are gated behind a feature flag
 (`--features integration`) and are not run in standard CI. They are the authoritative test
 for transport correctness and must be run before any release.
+
+**Error conditions not covered:** bus errors, clock stretch timeouts, and arbitration loss
+cannot be simulated via `i2c-stub`. `i2c-stub` always ACKs registered addresses; the only
+error condition it can produce is a NACK on an unregistered address. The mapping from
+`LinuxI2CError` to these variants is covered by the Tier 1 unit tests; exercising them
+end-to-end requires real misbehaving hardware.
 
 `i2cdev`'s `MockI2CDevice` is intentionally not used for transport tests. The mock does
 not validate message structure, addresses, or flags — it would test `i2cdev`'s own mock
@@ -546,7 +559,15 @@ In `tests/discovery.rs` (or `#[cfg(test)]` within `src/discovery.rs`):
 - Use `tempfile` to construct a synthetic sysfs tree
 - Test all four outcomes: success, `ConnectorNotFound`, `ConnectorHasNoDdcAdapter`,
   `DdcAdapterIndexUnparseable`
-- No kernel involvement; runs in standard CI
+
+In `#[cfg(test)]` within `src/error.rs` (or `src/transport.rs`):
+
+- Unit test the internal `LinuxI2CError` → `I2cTransactionError` mapping function
+- Construct `LinuxI2CError::Errno(e)` for each errno named in `fault-codes.rst` and
+  assert the expected `I2cErrorKind` variant
+- Include a test for an unrecognised errno asserting `Unknown { errno }`
+
+No kernel involvement; runs in standard CI.
 
 ### Step 8 — Tier 2 integration tests
 
@@ -555,9 +576,13 @@ In `tests/transport.rs`, gated behind `#[cfg(feature = "integration")]`:
 - Require `i2c-stub` to be loaded and a stub device registered at address 0x54
 - Test SCDC read: verify compound message construction and correct data retrieval
 - Test SCDC write: verify single message construction and register update
-- Test NACK: configure stub to reject address 0x54, verify `I2cErrorKind` mapping
+- Test `AddressNack`: issue a transaction to an address not registered with the stub,
+  verify `I2cErrorKind::AddressNack` (or `Unknown { errno: EIO }` on `amdgpu` — note
+  the discrepancy if it arises)
 - Document the setup steps required to run these tests in a `README` or test module
   doc comment
+- Note explicitly that bus errors, timeouts, and arbitration loss are not covered;
+  their mapping is validated by the Tier 1 unit tests only
 
 ### Step 9 — Release
 
