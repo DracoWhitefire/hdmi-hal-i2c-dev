@@ -354,6 +354,50 @@ which requires `std`. Any caller that needs `no_std` link training must supply t
 
 ---
 
+## Test Strategy
+
+Testing is split into two tiers based on what each tier actually validates.
+
+### Tier 1: no-hardware tests
+
+**`connector_ddc_adapter`** is tested against a synthetic sysfs tree constructed in a
+`tempfile` temporary directory. The test creates the expected symlink structure under a
+configurable root, then calls `connector_ddc_adapter` with that root substituted for
+`/sys/class/drm`. This covers:
+
+- successful resolution of a valid connector,
+- `ConnectorNotFound` when the connector directory is absent,
+- `ConnectorHasNoDdcAdapter` when the connector exists but has no `ddc` symlink,
+- `DdcAdapterIndexUnparseable` when the symlink target is malformed.
+
+No kernel involvement. Runs in CI on any Linux host.
+
+### Tier 2: `i2c-stub` integration tests
+
+**`I2cDevTransport`** is tested against the Linux `i2c-stub` kernel module, which
+registers a fake I²C device at a specified address and exposes it as a real `/dev/i2c-N`
+device node. Transactions go through the full `I2C_RDWR` ioctl path; the stub responds
+to reads and records writes.
+
+This tier validates:
+- correct compound message construction for SCDC reads (write-then-read in a single ioctl),
+- correct single-message construction for SCDC writes,
+- slave address 0x54 is set on all messages,
+- `I2cTransactionError` is produced when the stub is configured to NACK.
+
+These tests require `i2c-stub` to be loaded (`modprobe i2c-stub`) and the calling process
+to have write permission on the resulting device node. They are gated behind a feature flag
+(`--features integration`) and are not run in standard CI. They are the authoritative test
+for transport correctness and must be run before any release.
+
+`i2cdev`'s `MockI2CDevice` is intentionally not used for transport tests. The mock does
+not validate message structure, addresses, or flags — it would test `i2cdev`'s own mock
+rather than this crate's message construction logic. The mock is appropriate for callers
+of `ScdcTransport` (`culvert`, `plumbob`) where register-level behaviour matters; it is
+not appropriate here.
+
+---
+
 ## Design Principles
 
 - **Follows `linux-embedded-hal` precedent.** Platform backends that implement
