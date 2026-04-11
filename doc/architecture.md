@@ -128,6 +128,22 @@ let path = connector_ddc_adapter("card0-HDMI-A-1")?;
 let transport = I2cDevTransport::open(path)?;
 ```
 
+**Hotplug sensitivity.** The `ddc` symlink is created by the kernel when a sink is
+connected and removed when it disconnects. Calling `connector_ddc_adapter` with no sink
+attached produces `ConnectorHasNoDdcAdapter` — the same error returned for a non-HDMI
+port. The two conditions are indistinguishable from this crate's perspective. Callers that
+need to distinguish them must monitor connector state through other means (e.g. DRM uevents)
+before calling this function.
+
+**TOCTOU.** There is an inherent window between `connector_ddc_adapter` returning a path
+and `I2cDevTransport::open` consuming it. On systems with dynamic adapter numbering, the
+adapter index resolved by `connector_ddc_adapter` may no longer refer to the DDC bus by
+the time `open` is called — if an unrelated I²C adapter appeared or disappeared in the
+interim, `/dev/i2c-N` may have been reassigned. This window cannot be closed in userspace.
+Callers that require precise control over open timing — for example, a privileged parent
+opening the device before dropping privileges — should open the file themselves and use
+`I2cDevTransport::from_file`.
+
 ---
 
 ## Key Types
