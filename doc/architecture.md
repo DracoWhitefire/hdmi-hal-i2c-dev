@@ -494,11 +494,18 @@ and may require adjustment if the sysfs layout differs.
 > This section tracks what needs to be built. Drop it once the crate reaches its first
 > release.
 
-### Step 1 — `hdmi-hal` (feature branch)
+### Step 1 — upstream crates (feature branches)
 
-- Change `ScdcTransport::read` from `&mut self` to `&self`. This is the only trait change
-  required. `HdmiPhy` is unaffected.
-- Publish a new `hdmi-hal` version before this crate is released.
+The `ScdcTransport::read` signature change from `&mut self` to `&self` propagates to all
+crates that define or implement the trait:
+
+- **`hdmi-hal`** — change the trait definition.
+- **`hdmi-hal-async`** — change the async trait definition.
+- **`culvert`** — update the `ScdcTransport` implementation.
+- **`culvert-async`** — update the async `ScdcTransport` implementation.
+
+`HdmiPhy` is unaffected. Publish new versions of all four crates before releasing this
+one.
 
 ### Step 2 — Cargo.toml
 
