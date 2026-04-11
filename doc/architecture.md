@@ -473,3 +473,95 @@ not appropriate here.
 `/sys/class/drm/<connector>/ddc`. Systems with multiple DRM cards are expected to follow
 the same structure (e.g. `card1-HDMI-A-1`). This has not been tested on a multi-GPU system
 and may require adjustment if the sysfs layout differs.
+
+---
+
+## Implementation Plan
+
+> This section tracks what needs to be built. Drop it once the crate reaches its first
+> release.
+
+### Step 1 — `hdmi-hal` (feature branch)
+
+- Change `ScdcTransport::read` from `&mut self` to `&self`. This is the only trait change
+  required. `HdmiPhy` is unaffected.
+- Publish a new `hdmi-hal` version before this crate is released.
+
+### Step 2 — Cargo.toml
+
+- Add a path dependency on the `hdmi-hal` feature branch for development.
+- Add `i2cdev` as a dependency.
+- Switch the `hdmi-hal` dependency to the published version before releasing this crate.
+
+### Step 3 — Error types
+
+Implement in `src/error.rs`:
+
+- `I2cDevError` — top-level error enum with `#[non_exhaustive]`
+- `I2cTransactionError` — struct with `phase: MessagePhase` and `kind: I2cErrorKind`
+- `MessagePhase` — enum with `Write { register: u8 }` and `Read { register: u8 }`
+- `I2cErrorKind` — enum with `#[non_exhaustive]`; map `errno` values from
+  `LinuxI2CError::Errno` to variants per `fault-codes.rst`; fall back to
+  `Unknown { errno: i32 }` for unrecognised values
+
+### Step 4 — `connector_ddc_adapter`
+
+Implement in `src/discovery.rs`:
+
+- Accept a connector name, resolve `/sys/class/drm/<connector>/ddc`
+- Return `ConnectorNotFound` if the connector directory is absent
+- Return `ConnectorHasNoDdcAdapter` if the `ddc` symlink is absent
+- Read the symlink target, extract the final path component, match against `i2c-<N>`
+- Return `DdcAdapterIndexUnparseable { symlink_target }` if the pattern does not match
+- Return `/dev/i2c-<N>` as a `PathBuf` on success
+
+### Step 5 — `I2cDevTransport`
+
+Implement in `src/transport.rs`:
+
+- Wrap `LinuxI2CBus` in a `Mutex` to provide interior mutability, satisfying the `&self`
+  signature of `ScdcTransport::read`
+- `open(path)` — open the device file, construct `LinuxI2CBus`, wrap in `Mutex`
+- `from_file(File)` — convert `File` to `LinuxI2CBus` via `AsRawFd`, wrap in `Mutex`
+- `ScdcTransport::read` — lock the bus, issue a compound two-message `I2C_RDWR`
+  transaction via `LinuxI2CBus::transfer`; map `LinuxI2CError` to `I2cTransactionError`
+  with `phase: MessagePhase::Write` or `MessagePhase::Read` depending on which message
+  in the batch failed (determined by the count returned from `transfer`)
+- `ScdcTransport::write` — lock the bus, issue a single two-byte write message
+
+### Step 6 — `StubPhy<F>` and `PhyCall`
+
+Implement in `src/phy.rs`:
+
+- `PhyCall` enum with `#[derive(Debug)]` and `#[non_exhaustive]`
+- `StubPhy<F>` struct with `on_call: F`
+- `StubPhy::new(on_call: F) -> Self`
+- `HdmiPhy for StubPhy<F> where F: FnMut(PhyCall)` — each method constructs the
+  appropriate `PhyCall` variant, calls `self.on_call`, returns `Ok(())`
+
+### Step 7 — Tier 1 tests
+
+In `tests/discovery.rs` (or `#[cfg(test)]` within `src/discovery.rs`):
+
+- Use `tempfile` to construct a synthetic sysfs tree
+- Test all four outcomes: success, `ConnectorNotFound`, `ConnectorHasNoDdcAdapter`,
+  `DdcAdapterIndexUnparseable`
+- No kernel involvement; runs in standard CI
+
+### Step 8 — Tier 2 integration tests
+
+In `tests/transport.rs`, gated behind `#[cfg(feature = "integration")]`:
+
+- Require `i2c-stub` to be loaded and a stub device registered at address 0x54
+- Test SCDC read: verify compound message construction and correct data retrieval
+- Test SCDC write: verify single message construction and register update
+- Test NACK: configure stub to reject address 0x54, verify `I2cErrorKind` mapping
+- Document the setup steps required to run these tests in a `README` or test module
+  doc comment
+
+### Step 9 — Release
+
+- Switch `hdmi-hal` dependency from path to published version
+- Publish `hdmi-hal` with the `ScdcTransport::read` signature change
+- Publish `hdmi-hal-i2c-dev`
+- Drop this section from the architecture doc
