@@ -150,11 +150,19 @@ compound reads atomic. This is important for CED counters, which may increment b
 address write and a data read if the two were issued as separate ioctl calls.
 
 ```rust
-pub struct I2cDevTransport { /* file descriptor, adapter path */ }
+pub struct I2cDevTransport { /* LinuxI2CBus */ }
 
 impl I2cDevTransport {
     /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
+
+    /// Construct a transport from an already-open file.
+    ///
+    /// Intended for privilege-separation patterns where the `/dev/i2c-N` device
+    /// is opened by a privileged parent process and the `File` is passed to an
+    /// unprivileged child. The caller is responsible for ensuring the file refers
+    /// to a valid `i2c-dev` device node.
+    pub fn from_file(file: std::fs::File) -> Self;
 }
 
 impl ScdcTransport for I2cDevTransport {
