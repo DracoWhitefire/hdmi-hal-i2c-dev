@@ -18,10 +18,11 @@ the SCDC register map.
 
 `ScdcTransport` is implemented by opening the DDC adapter device for an HDMI connector
 and issuing raw I²C transactions to the SCDC slave address (0x54). `HdmiPhy` is
-implemented as a no-op stub: PHY programming from Linux userspace has no standard kernel
-interface, so all PHY method calls are accepted and return `Ok(())`. The stub is sufficient
-to run the full FRL training state machine and validate SCDC register logic against a real
-sink; it simply means the source-side lane reconfiguration is not performed.
+implemented by `StubPhy`, a generic stub that accepts all PHY calls, forwards each as a
+`PhyCall` event to a caller-supplied callback, and returns `Ok(())`. PHY programming from
+Linux userspace has no standard kernel interface; the stub is sufficient to run the full
+FRL training state machine and validate SCDC register logic against a real sink, and lets
+callers observe or record the PHY call sequence without requiring hardware.
 
 This crate is explicitly not the production path. The production implementation is a kernel
 module operating through the DRM driver's `i2c_adapter`. This crate is the development,
@@ -34,7 +35,9 @@ validation, and diagnostic backend, intended for use before and alongside kernel
 `hdmi-hal-i2c-dev` covers:
 
 - `I2cDevTransport` — implements `ScdcTransport` over a `/dev/i2c-N` device file,
-- `NoopPhy` — implements `HdmiPhy` as a no-op stub; accepts all calls and returns `Ok(())`,
+- `StubPhy<F>` — implements `HdmiPhy` with a caller-supplied callback; forwards each PHY
+  call as a `PhyCall` event and returns `Ok(())`,
+- `PhyCall` — structured event type describing a single PHY method invocation,
 - `connector_ddc_adapter` — resolves a DRM connector name (e.g. `card0-HDMI-A-1`) to its
   DDC adapter device path (`/dev/i2c-N`) via sysfs,
 - `I2cDevError` — the unified error type for I²C device operations.
@@ -42,7 +45,7 @@ validation, and diagnostic backend, intended for use before and alongside kernel
 The following are out of scope:
 
 - **PHY programming** — there is no standard Linux userspace interface for HDMI PHY
-  register access. `NoopPhy` stubs all methods. A real PHY backend, if one is ever needed
+  register access. `StubPhy` stubs all methods. A real PHY backend, if one is ever needed
   in userspace, is a separate crate.
 - **EDID reads** — EDID is read over the DDC bus at I²C address 0x50, not 0x54. This crate
   only implements `ScdcTransport`, which operates against the SCDC slave at 0x54. EDID
@@ -140,17 +143,23 @@ impl ScdcTransport for I2cDevTransport {
 }
 ```
 
-### `NoopPhy`
+### `StubPhy<F>`
 
-Implements `HdmiPhy` as a no-op stub. All four methods accept their arguments, emit a
-log line via `eprintln!` recording what was called, and return `Ok(())`. The log output
-lets a developer observe the sequence of PHY operations the training state machine would
-issue against real hardware, without requiring a hardware PHY.
+Implements `HdmiPhy` with a caller-supplied callback. Each method constructs a `PhyCall`
+variant describing the invocation, passes it to the callback, and returns `Ok(())`.
+The callback owns the side effect — logging, recording, asserting — and `StubPhy` itself
+is unconditionally infallible.
 
 ```rust
-pub struct NoopPhy;
+pub struct StubPhy<F> {
+    on_call: F,
+}
 
-impl HdmiPhy for NoopPhy {
+impl<F: FnMut(PhyCall)> StubPhy<F> {
+    pub fn new(on_call: F) -> Self;
+}
+
+impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
     type Error = Infallible;
 
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), Infallible>;
@@ -160,9 +169,44 @@ impl HdmiPhy for NoopPhy {
 }
 ```
 
-`type Error = Infallible` is intentional and meaningful: a no-op implementation cannot
-fail, and the type communicates this to the compiler. Callers that propagate
+`type Error = Infallible` is unconditionally correct: the callback returns `()`, so
+`StubPhy` cannot fail regardless of what the callback does. Callers that propagate
 `TrainingError<_, Infallible>` can statically observe that PHY errors are impossible.
+
+Typical uses:
+
+```rust
+// No-op: discard all PHY calls.
+let phy = StubPhy::new(|_| {});
+
+// Logging: print each call to stderr.
+let phy = StubPhy::new(|call| eprintln!("{call:?}"));
+
+// Test assertion: send calls to a channel for inspection.
+let phy = StubPhy::new(|call| tx.send(call).unwrap());
+```
+
+### `PhyCall`
+
+A structured description of a single `HdmiPhy` method invocation, used as the callback
+argument for `StubPhy`.
+
+```rust
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum PhyCall {
+    SetFrlRate(HdmiForumFrl),
+    SendLtp(LtpPattern),
+    AdjustEqualization(EqParams),
+    SetScrambling(bool),
+}
+```
+
+`#[non_exhaustive]` is intentional: if `HdmiPhy` gains new methods, `PhyCall` gains new
+variants. Downstream crates that match on `PhyCall` — test harnesses, diagnostic tools —
+should not be forced to recompile and update exhaustive matches for methods they do not
+care about. `StubPhy`'s own `HdmiPhy` impl is unaffected; the compiler enforces its
+coverage through the trait, not through the enum.
 
 ### `I2cDevError`
 
@@ -260,19 +304,20 @@ the kernel specification and meaningful on compliant adapters.
 
 ### Above: `hdmi-hal` traits
 
-`I2cDevTransport` satisfies `ScdcTransport` as defined in `hdmi-hal`. `NoopPhy` satisfies
-`HdmiPhy`. Callers construct these types and pass them — by value or by `&mut` reference —
-to any API that accepts the corresponding trait. Nothing in this crate is specific to
-`culvert` or `plumbob`; those crates accept any `ScdcTransport` and `HdmiPhy` respectively.
+`I2cDevTransport` satisfies `ScdcTransport` as defined in `hdmi-hal`. `StubPhy<F>`
+satisfies `HdmiPhy`. Callers construct these types and pass them — by value or by `&mut`
+reference — to any API that accepts the corresponding trait. Nothing in this crate is
+specific to `culvert` or `plumbob`; those crates accept any `ScdcTransport` and `HdmiPhy`
+respectively.
 
 The typical end-to-end validation setup:
 
 ```rust
 let path = connector_ddc_adapter("card0-HDMI-A-1")?;
 let transport = I2cDevTransport::open(path)?;
-let scdc = Scdc::new(transport);          // culvert
-let phy = NoopPhy;
-let mut trainer = FrlTrainer::new(scdc, phy);  // plumbob
+let scdc = Scdc::new(transport);                            // culvert
+let phy = StubPhy::new(|call| eprintln!("{call:?}"));      // log PHY calls to stderr
+let mut trainer = FrlTrainer::new(scdc, phy);               // plumbob
 let outcome = trainer.train_at_rate(HdmiForumFrl::Rate6Gbps4Lanes, &TrainingConfig::default())?;
 ```
 
@@ -292,9 +337,15 @@ which requires `std`. Any caller that needs `no_std` link training must supply t
 - **Follows `linux-embedded-hal` precedent.** Platform backends that implement
   hardware-abstraction traits for a specific OS or environment are a well-established
   pattern in the embedded Rust ecosystem. This crate applies that pattern to the HDMI stack.
-- **Explicit about what it is not.** `NoopPhy` does not silently pretend to configure
-  hardware; it logs every call and its `Infallible` error type communicates its nature to
-  the type system. The crate documentation makes the non-production status prominent.
+- **Explicit about what it is not.** `StubPhy` does not silently pretend to configure
+  hardware; its `Infallible` error type communicates its nature to the type system, and the
+  crate documentation makes the non-production status prominent.
+- **Extensible without forking.** Public types are designed so that downstream crates can
+  extend behaviour — through callbacks, trait implementations, or wrapper types — without
+  requiring changes to this crate. `#[non_exhaustive]` is applied to types that will grow
+  alongside the rest of the stack (`I2cDevError`, `I2cErrorKind`, `PhyCall`), so that
+  adding variants does not force dependent crates to update exhaustive matches they do not
+  own.
 - **Minimal scope.** This crate does exactly two things: implement `ScdcTransport` over
   `i2c-dev`, and stub `HdmiPhy`. Discovery helpers are included because they are inseparable
   from usability, not because this is a general-purpose DRM sysfs library.
@@ -307,11 +358,6 @@ which requires `std`. Any caller that needs `no_std` link training must supply t
 ---
 
 ## Open Items
-
-**`HdmiPhy` stub log destination** — `NoopPhy` currently uses `eprintln!` for its call
-log. Whether to replace this with a caller-supplied callback, a structured event type, or
-leave it as stderr output is an open design question. The answer depends on what the
-diagnostic tooling built on top of this crate actually needs.
 
 **Multi-card support** — `connector_ddc_adapter` assumes the sysfs path structure is
 `/sys/class/drm/<connector>/ddc`. Systems with multiple DRM cards are expected to follow
