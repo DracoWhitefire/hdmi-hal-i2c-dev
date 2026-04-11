@@ -139,10 +139,15 @@ file; each `read` and `write` call issues an I²C transaction to the SCDC slave 
 (0x54).
 
 The SCDC register protocol is:
-- **Write:** a two-byte I²C write transaction — register address byte followed by value byte.
-- **Read:** a one-byte I²C write (register address), followed by a one-byte I²C read.
+- **Write:** a single `I2C_RDWR` message — a two-byte I²C write containing the register
+  address byte followed by the value byte.
+- **Read:** a compound two-message `I2C_RDWR` transaction — a one-byte I²C write
+  (register address) and a one-byte I²C read, issued together in a single ioctl call.
 
-Both map directly to the `I2C_RDWR` ioctl with appropriately constructed message arrays.
+Both are issued via `LinuxI2CBus::transfer` from `i2cdev`, which passes all messages in a
+single `I2C_RDWR` ioctl. The kernel holds the bus for the duration of the call, making
+compound reads atomic. This is important for CED counters, which may increment between an
+address write and a data read if the two were issued as separate ioctl calls.
 
 ```rust
 pub struct I2cDevTransport { /* file descriptor, adapter path */ }
