@@ -136,3 +136,7 @@ impl std::fmt::Display for I2cTransactionError {
 }
 
 impl std::error::Error for I2cTransactionError {}
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;
