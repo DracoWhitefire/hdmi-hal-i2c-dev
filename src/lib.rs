@@ -7,6 +7,8 @@
 
 #![deny(missing_docs)]
 
+pub mod discovery;
 pub mod error;
 
+pub use discovery::connector_ddc_adapter;
 pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
