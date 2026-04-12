@@ -2,6 +2,16 @@
 name = "hdmi-hal-i2c-dev"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Linux userspace hdmi-hal backend via /dev/i2c-N (i2c-dev)"
+readme = "README.md"
+license = "MPL-2.0"
+repository = "https://github.com/DracoWhitefire/hdmi-hal-i2c-dev"
+keywords = ["hdmi", "i2c", "linux", "hal", "scdc"]
+categories = ["hardware-support", "embedded"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 integration = []
