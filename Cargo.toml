@@ -3,6 +3,9 @@ name = "hdmi-hal-i2c-dev"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+integration = []
+
 [dependencies]
 display-types = "0.3.1"
 hdmi-hal = { path = "../hdmi-hal" }
