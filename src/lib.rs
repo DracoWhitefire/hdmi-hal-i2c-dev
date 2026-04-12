@@ -10,8 +10,10 @@
 
 pub mod discovery;
 pub mod error;
+pub mod phy;
 pub mod transport;
 
 pub use discovery::connector_ddc_adapter;
 pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
+pub use phy::{PhyCall, StubPhy};
 pub use transport::I2cDevTransport;
