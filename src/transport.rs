@@ -16,6 +16,7 @@ use crate::error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase}
 const SCDC_ADDRESS: u16 = 0x54;
 
 /// An SCDC transport backed by a `/dev/i2c-N` device node.
+#[derive(Debug)]
 ///
 /// Implements [`ScdcTransport`] by issuing compound `I2C_RDWR` transactions
 /// to the SCDC slave address (0x54) on the specified adapter.
@@ -152,6 +153,18 @@ pub(crate) fn map_errno(errno: i32) -> I2cErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- I2cDevTransport::open -----------------------------------------------
+
+    #[test]
+    fn open_nonexistent_path_returns_device_open_failed() {
+        let path = std::path::Path::new("/dev/i2c-nonexistent-99999");
+        let err = I2cDevTransport::open(path).unwrap_err();
+        assert!(matches!(
+            err,
+            I2cDevError::DeviceOpenFailed { path: ref p, .. } if p == path
+        ));
+    }
 
     #[test]
     fn enxio_maps_to_address_nack() {
