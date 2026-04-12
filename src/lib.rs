@@ -1,14 +1,12 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Linux userspace `hdmi-hal` backend backed by `/dev/i2c-N` via the `i2c-dev`
+//! kernel interface.
+//!
+//! This crate is the development, validation, and diagnostic backend for the
+//! HDMI stack — not the production path. See the crate-level documentation and
+//! `doc/architecture.md` for full context.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#![deny(missing_docs)]
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod error;
+
+pub use error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase};
