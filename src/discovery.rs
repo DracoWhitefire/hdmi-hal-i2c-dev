@@ -154,4 +154,28 @@ mod tests {
         let path = connector_ddc_adapter_in(tmp.path(), "card1-HDMI-A-2").unwrap();
         assert_eq!(path, PathBuf::from("/dev/i2c-12"));
     }
+
+    #[test]
+    fn public_entry_point_returns_connector_not_found() {
+        // Exercises the public `connector_ddc_adapter` function (which hardcodes
+        // `/sys/class/drm`) against the live sysfs. No real system will have a
+        // connector with this name, so `ConnectorNotFound` is certain.
+        let err = connector_ddc_adapter("card99-HDMI-NOEXIST-99").unwrap_err();
+        assert!(matches!(
+            err,
+            I2cDevError::ConnectorNotFound { connector } if connector == "card99-HDMI-NOEXIST-99"
+        ));
+    }
+
+    #[test]
+    fn ddc_adapter_index_unparseable_dotdot_target() {
+        // Symlink target whose final component is `..` — `file_name()` returns
+        // `None` for paths ending in `..`, hitting the first `ok_or_else` branch.
+        let tmp = make_sysfs("card0-HDMI-A-1", Some("../.."));
+        let err = connector_ddc_adapter_in(tmp.path(), "card0-HDMI-A-1").unwrap_err();
+        assert!(matches!(
+            err,
+            I2cDevError::DdcAdapterIndexUnparseable { .. }
+        ));
+    }
 }

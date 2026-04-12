@@ -66,8 +66,8 @@
 use std::path::PathBuf;
 
 use hdmi_hal::scdc::ScdcTransport;
-use hdmi_hal_i2c_dev::transport::I2cDevTransport;
 use hdmi_hal_i2c_dev::I2cDevError;
+use hdmi_hal_i2c_dev::transport::I2cDevTransport;
 
 /// Return the adapter path for `var`, or `None` if the env var is unset.
 ///
@@ -81,9 +81,10 @@ fn adapter_path(var: &str) -> Option<PathBuf> {
 
 fn open_transport(var: &str) -> Option<I2cDevTransport> {
     let path = adapter_path(var)?;
-    Some(I2cDevTransport::open(&path).unwrap_or_else(|e| {
-        panic!("failed to open {}: {e}", path.display())
-    }))
+    Some(
+        I2cDevTransport::open(&path)
+            .unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display())),
+    )
 }
 
 // --- Read/write correctness --------------------------------------------------
@@ -143,10 +144,7 @@ fn read_produces_error_when_slave_not_registered() {
         .expect_err("expected error for unregistered address, got Ok");
     match err {
         I2cDevError::Transaction(ref e) => {
-            eprintln!(
-                "NACK test: phase={:?} kind={:?}",
-                e.phase, e.kind
-            );
+            eprintln!("NACK test: phase={:?} kind={:?}", e.phase, e.kind);
             // On a compliant adapter this will be AddressNack.
             // On amdgpu it will be Unknown { errno: EIO }.
             // Both are correct; the test just verifies an error is produced
