@@ -591,7 +591,85 @@ In `tests/transport.rs`, gated behind `#[cfg(feature = "integration")]`:
 - Note explicitly that bus errors, timeouts, and arbitration loss are not covered;
   their mapping is validated by the Tier 1 unit tests only
 
-### Step 9 — Release
+### Step 9 — Cargo.toml metadata
+
+Fill in the package metadata to match the rest of the stack:
+
+- `description` — one-line summary
+- `readme = "README.md"`
+- `license = "MPL-2.0"`
+- `repository` — GitHub URL once the repo is created
+- `rust-version = "1.85"` — consistent with sibling crates
+- `keywords` — e.g. `["hdmi", "i2c", "linux", "hal", "scdc"]`
+- `categories = ["hardware-support", "embedded"]` — note: no `"no-std"` since this crate is `std`-only
+- `[package.metadata.docs.rs]` block — add if docs.rs rendering requires any cfg flags
+
+### Step 10 — `src/lib.rs` crate-level docs
+
+Replace the cargo init placeholder with:
+
+- Crate-level rustdoc: one-paragraph description, usage example showing the
+  `connector_ddc_adapter` → `I2cDevTransport::open` → `Scdc::new` + `StubPhy::new` sequence
+- `#![forbid(unsafe_code)]`
+- `#![deny(missing_docs)]`
+
+All public items in all modules must have rustdoc comments. `cargo rustdoc -- -D missing_docs`
+must pass before release.
+
+### Step 11 — Supporting files
+
+Files present in all released crates in this stack:
+
+- `README.md` — crate description, badges (CI, crates.io, docs.rs, license, rustc, SLSA),
+  one-paragraph summary, usage example, links to `doc/architecture.md`
+- `CHANGELOG.md` — Keep a Changelog format; start with an `[Unreleased]` section
+- `CONTRIBUTING.md` — link to `doc/setup.md`, `doc/testing.md`, `doc/architecture.md`;
+  issue and PR guidelines consistent with sibling crates
+- `CODE_OF_CONDUCT.md` — copy from a sibling crate
+- `LICENSE` — MPL-2.0; copy from a sibling crate
+- `.coverage-baseline` — initialise to `0.00`; CI will ratchet it upward on first run
+
+### Step 12 — `doc/` companion files
+
+- `doc/setup.md` — build command, test command, how to load `i2c-stub` and set up a Tier 2
+  test environment (modprobe, device node permissions, running with `--features integration`)
+- `doc/testing.md` — testing strategy mirroring the architecture doc's Test Strategy section;
+  what Tier 1 covers, what Tier 2 covers, what is intentionally not covered and why
+- `doc/roadmap.md` — deferred work: `linux-drm` split for `connector_ddc_adapter` when a
+  second consumer appears; multi-card sysfs validation; richer errno coverage once a
+  compliant non-amdgpu adapter is available for CI
+
+### Step 13 — GitHub Actions workflows
+
+Three workflows, consistent with sibling crates:
+
+**`ci.yml`** — runs on push to `main`/`develop` and on PRs:
+- `cargo fmt --check`
+- `cargo clippy --locked -- -D warnings`
+- `cargo rustdoc --locked -- -D missing_docs`
+- `cargo test --locked`
+- `cargo test --locked --features integration` is **not** run in CI (requires hardware);
+  document this explicitly in the workflow as a comment
+- Coverage job with `cargo-llvm-cov`: measure, check against `.coverage-baseline`
+  (−0.1% tolerance), ratchet baseline upward on push, open PR if baseline improves
+
+**`audit.yml`** — runs on changes to `Cargo.toml` / `Cargo.lock`:
+- `rustsec/audit-check`
+
+**`publish.yml`** — runs on version tags (`v*.*.*`):
+- Check tag is on `main`
+- Full quality gate (fmt, clippy, docs, test) — same as CI
+- `cargo package --locked`
+- `actions/attest-build-provenance` — SLSA Build Level 2 provenance on the `.crate` file
+- `cargo publish`
+- Create GitHub release with the attested `.crate` attached and provenance verification
+  instructions
+
+Note: `fuzz.yml` is not added. The most fuzzable surface is the symlink path component
+parser in `connector_ddc_adapter`, but the logic is simple enough that Tier 1 unit tests
+cover it adequately. Revisit if the parser grows in complexity.
+
+### Step 14 — Release
 
 - Switch `hdmi-hal` dependency from path to published version
 - Publish `hdmi-hal` with the `ScdcTransport::read` signature change
