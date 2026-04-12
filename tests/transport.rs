@@ -1,9 +1,8 @@
 //! Integration tests for [`I2cDevTransport`] against the Linux `i2c-stub` kernel module.
 //!
-//! These tests exercise the full `I2C_RDWR` ioctl path against a real kernel
-//! I²C adapter. They validate compound message construction, slave address
-//! correctness, and register read/write semantics — things that cannot be
-//! verified without a responding kernel device.
+//! These tests exercise the SMBus byte-data ioctl path against a real kernel
+//! I²C adapter. They validate register read/write semantics and error handling
+//! — things that cannot be verified without a responding kernel device.
 //!
 //! # Setup
 //!
@@ -47,10 +46,10 @@
 //! # What is and is not covered
 //!
 //! **Covered:**
-//! - Compound two-message construction for SCDC reads (write-then-read in a
-//!   single `I2C_RDWR` ioctl)
-//! - Single two-byte message construction for SCDC writes
-//! - Slave address 0x54 is set on all messages
+//! - SMBus byte-data read (`I2C_SMBUS`): combined write of register address
+//!   then read of one byte, in a single ioctl
+//! - SMBus byte-data write (`I2C_SMBUS`): write of register address and value
+//! - Slave address 0x54 is bound at device-open time
 //! - Read/write round-trip correctness against the stub register map
 //! - `AddressNack` (or `Unknown { errno: EIO }` on `amdgpu`) when the slave
 //!   address is not registered
@@ -59,7 +58,7 @@
 //! - Bus errors, clock stretch timeouts, and arbitration loss — `i2c-stub`
 //!   always ACKs registered addresses; these conditions require misbehaving
 //!   hardware. Their errno→`I2cErrorKind` mapping is validated by the Tier 1
-//!   unit tests in `src/transport.rs`.
+//!   unit tests in `src/transport_tests.rs`.
 
 #![cfg(feature = "integration")]
 

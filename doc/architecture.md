@@ -81,7 +81,7 @@ i2cdev    ──►  hdmi-hal-i2c-dev
 
 - `hdmi-hal` — `ScdcTransport`, `HdmiPhy`, `EqParams`, `LtpPattern`
 - `i2cdev` — safe Rust wrappers over the Linux `i2c-dev` kernel interface; provides the
-  `I2C_RDWR` ioctl binding that backs `I2cDevTransport`. This is what allows
+  `I2C_SMBUS` ioctl binding that backs `I2cDevTransport`. This is what allows
   `#![forbid(unsafe_code)]` to hold: all unsafe is contained inside `i2cdev`.
 - `std` — file I/O, sysfs path resolution
 
@@ -150,7 +150,7 @@ the time `open` is called — if an unrelated I²C adapter appeared or disappear
 interim, `/dev/i2c-N` may have been reassigned. This window cannot be closed in userspace.
 Callers that require precise control over open timing — for example, a privileged parent
 opening the device before dropping privileges — should open the file themselves and use
-`I2cDevTransport::from_file`.
+`LinuxI2CDevice::new` directly with the raw file descriptor.
 
 ---
 
@@ -159,40 +159,36 @@ opening the device before dropping privileges — should open the file themselve
 ### `I2cDevTransport`
 
 Implements `ScdcTransport` for a `/dev/i2c-N` device. On construction it opens the device
-file; each `read` and `write` call issues an I²C transaction to the SCDC slave address
-(0x54).
+file and sets the slave address to 0x54 via `I2C_SLAVE`; each `read` and `write` call
+issues an SMBus transaction to the SCDC slave address.
 
 The SCDC register protocol is:
-- **Write:** a single `I2C_RDWR` message — a two-byte I²C write containing the register
-  address byte followed by the value byte.
-- **Read:** a compound two-message `I2C_RDWR` transaction — a one-byte I²C write
-  (register address) and a one-byte I²C read, issued together in a single ioctl call.
+- **Write:** `smbus_write_byte_data(reg, value)` — an `I2C_SMBUS` ioctl issuing a two-byte
+  write containing the register address byte followed by the value byte.
+- **Read:** `smbus_read_byte_data(reg)` — an `I2C_SMBUS` ioctl issuing a combined
+  write-then-read: the register address byte is written, then one byte is read back, all
+  within a single ioctl call.
 
-Both are issued via `LinuxI2CBus::transfer` from `i2cdev`, which passes all messages in a
-single `I2C_RDWR` ioctl. The kernel holds the bus for the duration of the call, making
-compound reads atomic. This is important for CED counters, which may increment between an
-address write and a data read if the two were issued as separate ioctl calls.
+Both operations are issued via `LinuxI2CDevice` from `i2cdev`. The kernel holds the bus for
+the duration of the ioctl, making reads atomic. This is important for CED counters, which
+may increment between an address write and a data read if the two were issued as separate
+ioctl calls.
+
+SMBus byte-data semantics are equivalent to raw I²C for SCDC's single-byte register model,
+and work on both `i2c-stub` (for integration tests) and real DDC adapters.
 
 ```rust
-pub struct I2cDevTransport { /* LinuxI2CBus */ }
+pub struct I2cDevTransport { /* LinuxI2CDevice in Mutex */ }
 
 impl I2cDevTransport {
     /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
-
-    /// Construct a transport from an already-open file.
-    ///
-    /// Intended for privilege-separation patterns where the `/dev/i2c-N` device
-    /// is opened by a privileged parent process and the `File` is passed to an
-    /// unprivileged child. The caller is responsible for ensuring the file refers
-    /// to a valid `i2c-dev` device node.
-    pub fn from_file(file: std::fs::File) -> Self;
 }
 
 impl ScdcTransport for I2cDevTransport {
     type Error = I2cDevError;
 
-    fn read(&mut self, reg: u8) -> Result<u8, I2cDevError>;
+    fn read(&self, reg: u8) -> Result<u8, I2cDevError>;
     fn write(&mut self, reg: u8, value: u8) -> Result<(), I2cDevError>;
 }
 ```
@@ -300,7 +296,13 @@ pub struct I2cTransactionError {
     pub kind: I2cErrorKind,
 }
 
-/// Which message in the compound SCDC transaction failed.
+/// Which phase of the SCDC transaction failed.
+///
+/// The current SMBus-backed implementation always reports `Write` — the
+/// `I2C_SMBUS` ioctl does not distinguish between the outbound address byte
+/// and the inbound data byte when returning an error. `Read` is retained for
+/// future implementations that use raw `I2C_RDWR` and can isolate the failing
+/// message by index.
 pub enum MessagePhase {
     /// The write-phase message failed (register address byte, or write data).
     Write { register: u8 },
@@ -339,10 +341,11 @@ pub enum I2cErrorKind {
 
 ### Below: Linux `i2c-dev` kernel interface
 
-`I2cDevTransport` is backed by `ioctl(fd, I2C_RDWR, ...)` calls against an open
-`/dev/i2c-N` file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux
-desktop systems it is either built in or loaded automatically. The calling process needs
-read/write permission on the device node (typically via the `i2c` group).
+`I2cDevTransport` is backed by `ioctl(fd, I2C_SLAVE, 0x54)` on open (to set the slave
+address) and `ioctl(fd, I2C_SMBUS, ...)` per transaction, against an open `/dev/i2c-N`
+file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux desktop systems
+it is either built in or loaded automatically. The calling process needs read/write
+permission on the device node (typically via the `i2c` group).
 
 The SCDC slave address (0x54) is fixed by the HDMI specification. This crate does not
 expose it as a parameter.
@@ -425,15 +428,14 @@ No kernel involvement. Runs in CI on any Linux host.
 
 **`I2cDevTransport`** is tested against the Linux `i2c-stub` kernel module, which
 registers a fake I²C device at a specified address and exposes it as a real `/dev/i2c-N`
-device node. Transactions go through the full `I2C_RDWR` ioctl path; the stub responds
-to reads and records writes.
+device node. Transactions go through the full `I2C_SMBUS` ioctl path; the stub responds
+to SMBus byte-data reads and records writes.
 
 This tier validates:
-- correct compound message construction for SCDC reads (write-then-read in a single ioctl),
-- correct single-message construction for SCDC writes,
-- slave address 0x54 is set on all messages,
-- `AddressNack` is produced when a transaction targets an address not registered with
-  the stub.
+- correct SMBus byte-data read (atomic combined write-then-read in a single ioctl),
+- correct SMBus byte-data write,
+- slave address 0x54 is set at device open time,
+- an error is produced when a transaction targets an address not registered with the stub.
 
 These tests require `i2c-stub` to be loaded (`modprobe i2c-stub`) and the calling process
 to have write permission on the resulting device node. They are gated behind a feature flag
@@ -491,8 +493,21 @@ and may require adjustment if the sysfs layout differs.
 
 ## Implementation Plan
 
-> This section tracks what needs to be built. Drop it once the crate reaches its first
-> release.
+> Steps 1–13 are complete. This section remains only to document the release
+> procedure (Step 14); drop it once the first release is published.
+
+### Step 14 — Release
+
+- Merge and publish `hdmi-hal`, `hdmi-hal-async`, `culvert`, and `culvert-async`
+  from their `feat-i2c-dev` branches. The `ScdcTransport::read` signature change
+  (`&mut self` → `&self`) is a breaking change in all four; publish new semver-minor
+  or major versions as appropriate.
+- Switch the `hdmi-hal` dependency in `Cargo.toml` from the path override to the
+  published version.
+- Run the Tier 2 integration tests (`cargo test --locked --features integration`)
+  against the hardware one final time.
+- Push a `v0.1.0` tag on `main`. The publish workflow handles the rest.
+- Drop this section.
 
 ### Step 1 — upstream crates (feature branches)
 
@@ -539,15 +554,14 @@ Implement in `src/discovery.rs`:
 
 Implement in `src/transport.rs`:
 
-- Wrap `LinuxI2CBus` in a `Mutex` to provide interior mutability, satisfying the `&self`
+- Wrap `LinuxI2CDevice` in a `Mutex` to provide interior mutability, satisfying the `&self`
   signature of `ScdcTransport::read`
-- `open(path)` — open the device file, construct `LinuxI2CBus`, wrap in `Mutex`
-- `from_file(File)` — convert `File` to `LinuxI2CBus` via `AsRawFd`, wrap in `Mutex`
-- `ScdcTransport::read` — lock the bus, issue a compound two-message `I2C_RDWR`
-  transaction via `LinuxI2CBus::transfer`; map `LinuxI2CError` to `I2cTransactionError`
-  with `phase: MessagePhase::Write` or `MessagePhase::Read` depending on which message
-  in the batch failed (determined by the count returned from `transfer`)
-- `ScdcTransport::write` — lock the bus, issue a single two-byte write message
+- `open(path)` — call `LinuxI2CDevice::new(path, 0x54)` (sets `I2C_SLAVE` to the SCDC
+  address), wrap in `Mutex`
+- `ScdcTransport::read` — lock the device, call `smbus_read_byte_data(reg)`;
+  map `LinuxI2CError` to `I2cTransactionError` with `phase: MessagePhase::Write`
+  (SMBus errors do not distinguish write phase from read phase)
+- `ScdcTransport::write` — lock the device, call `smbus_write_byte_data(reg, value)`
 
 ### Step 6 — `StubPhy<F>` and `PhyCall`
 
@@ -581,11 +595,12 @@ No kernel involvement; runs in standard CI.
 In `tests/transport.rs`, gated behind `#[cfg(feature = "integration")]`:
 
 - Require `i2c-stub` to be loaded and a stub device registered at address 0x54
-- Test SCDC read: verify compound message construction and correct data retrieval
-- Test SCDC write: verify single message construction and register update
-- Test `AddressNack`: issue a transaction to an address not registered with the stub,
-  verify `I2cErrorKind::AddressNack` (or `Unknown { errno: EIO }` on `amdgpu` — note
-  the discrepancy if it arises)
+- Test SCDC read via `smbus_read_byte_data`: verify atomic combined write-then-read and
+  correct data retrieval
+- Test SCDC write via `smbus_write_byte_data`: verify register update
+- Test error on unregistered address: issue a transaction to an adapter where 0x54 is not
+  registered, verify a `Transaction` error is returned (either `AddressNack` on a compliant
+  adapter, or `Unknown { errno: EIO }` on `amdgpu` — note the discrepancy if it arises)
 - Document the setup steps required to run these tests in a `README` or test module
   doc comment
 - Note explicitly that bus errors, timeouts, and arbitration loss are not covered;
