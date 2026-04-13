@@ -15,8 +15,26 @@ use crate::error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase}
 /// SCDC slave address, fixed by the HDMI specification (HDMI 2.1 Table 10-3).
 const SCDC_ADDRESS: u16 = 0x54;
 
+/// A narrow seam over the two SMBus operations [`I2cDevTransport`] requires.
+///
+/// This trait is crate-private. It exists solely to allow a lightweight mock
+/// in unit tests without exposing the seam in the public API.
+pub(crate) trait SmbusDevice {
+    fn smbus_read_byte_data(&mut self, reg: u8) -> Result<u8, LinuxI2CError>;
+    fn smbus_write_byte_data(&mut self, reg: u8, value: u8) -> Result<(), LinuxI2CError>;
+}
+
+impl SmbusDevice for LinuxI2CDevice {
+    fn smbus_read_byte_data(&mut self, reg: u8) -> Result<u8, LinuxI2CError> {
+        I2CDevice::smbus_read_byte_data(self, reg)
+    }
+
+    fn smbus_write_byte_data(&mut self, reg: u8, value: u8) -> Result<(), LinuxI2CError> {
+        I2CDevice::smbus_write_byte_data(self, reg, value)
+    }
+}
+
 /// An SCDC transport backed by a `/dev/i2c-N` device node.
-#[derive(Debug)]
 ///
 /// Implements [`ScdcTransport`] by issuing SMBus byte-data operations
 /// (`I2C_SMBUS`) to the SCDC slave address (0x54) on the specified adapter.
@@ -32,11 +50,19 @@ const SCDC_ADDRESS: u16 = 0x54;
 /// reconstruct the transport via [`I2cDevTransport::open`].
 ///
 /// [`ScdcTransport`]: hdmi_hal::scdc::ScdcTransport
-pub struct I2cDevTransport {
-    device: Mutex<LinuxI2CDevice>,
+// `SmbusDevice` is intentionally `pub(crate)`: it is a test seam, not a
+// public extension point. The bound on `D` is therefore more private than the
+// struct itself, which the compiler warns about. The warning is expected and
+// correct here — external callers cannot name `SmbusDevice` and therefore
+// cannot instantiate `I2cDevTransport<D>` with any `D` other than the default
+// `LinuxI2CDevice`. That is exactly the desired constraint.
+#[allow(private_bounds)]
+#[derive(Debug)]
+pub struct I2cDevTransport<D: SmbusDevice = LinuxI2CDevice> {
+    device: Mutex<D>,
 }
 
-impl I2cDevTransport {
+impl I2cDevTransport<LinuxI2CDevice> {
     /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
     ///
     /// The calling process must have read/write permission on the device node
@@ -58,7 +84,23 @@ impl I2cDevTransport {
     }
 }
 
-impl ScdcTransport for I2cDevTransport {
+// Same reasoning as the struct: `SmbusDevice` is `pub(crate)` by design, so
+// the bound is more private than the impl block. Suppressed here for the same
+// reason — this impl exists solely for tests and is not part of the public API.
+#[cfg(test)]
+#[allow(private_bounds)]
+impl<D: SmbusDevice> I2cDevTransport<D> {
+    /// Construct a transport from an already-opened device.
+    ///
+    /// Intended for unit tests; production code should use [`I2cDevTransport::open`].
+    pub(crate) fn from_device(device: D) -> Self {
+        Self {
+            device: Mutex::new(device),
+        }
+    }
+}
+
+impl<D: SmbusDevice> ScdcTransport for I2cDevTransport<D> {
     type Error = I2cDevError;
 
     /// Read one byte from the given SCDC register.
@@ -125,6 +167,7 @@ pub(crate) fn map_errno(errno: i32) -> I2cErrorKind {
         e => I2cErrorKind::Unknown { errno: e },
     }
 }
+
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
