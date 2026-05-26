@@ -24,6 +24,3 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
-
-[patch.crates-io]
-hdmi-hal = { path = "../hdmi-hal" }
