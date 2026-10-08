@@ -49,6 +49,32 @@ fn send_ltp_forwards_correct_variant() {
 }
 
 #[test]
+fn set_frl_output_gap_only_forwards_correct_variant() {
+    let mut received = None;
+    {
+        let mut phy = StubPhy::new(|call| received = Some(call));
+        phy.set_frl_output(FrlOutput::GapOnly).unwrap();
+    }
+    assert!(matches!(
+        received,
+        Some(PhyCall::SetFrlOutput(FrlOutput::GapOnly))
+    ));
+}
+
+#[test]
+fn set_frl_output_active_forwards_correct_variant() {
+    let mut received = None;
+    {
+        let mut phy = StubPhy::new(|call| received = Some(call));
+        phy.set_frl_output(FrlOutput::Active).unwrap();
+    }
+    assert!(matches!(
+        received,
+        Some(PhyCall::SetFrlOutput(FrlOutput::Active))
+    ));
+}
+
+#[test]
 fn adjust_equalization_forwards_correct_variant() {
     let mut received = None;
     {
@@ -85,10 +111,11 @@ fn callback_is_invoked_once_per_call() {
         let mut phy = StubPhy::new(|_| count += 1);
         phy.set_frl_rate(HdmiForumFrl::NotSupported).unwrap();
         phy.send_ltp(LanePatterns::default()).unwrap();
+        phy.set_frl_output(FrlOutput::GapOnly).unwrap();
         phy.adjust_equalization(EqParams::new()).unwrap();
         phy.set_scrambling(true).unwrap();
     }
-    assert_eq!(count, 4);
+    assert_eq!(count, 5);
 }
 
 #[test]
@@ -96,6 +123,7 @@ fn noop_stub_does_not_panic() {
     let mut phy = StubPhy::new(|_| {});
     phy.set_frl_rate(HdmiForumFrl::Rate3Gbps3Lanes).unwrap();
     phy.send_ltp(LanePatterns::default()).unwrap();
+    phy.set_frl_output(FrlOutput::Active).unwrap();
     phy.adjust_equalization(EqParams::new()).unwrap();
     phy.set_scrambling(false).unwrap();
 }

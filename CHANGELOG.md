@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hdmi-hal`'s new `HdmiPhy::send_ltp(patterns: LanePatterns)`. `None` on a lane means no
   training pattern; `None` on every lane stops the training patterns.
 
+### Added
+
+- `StubPhy` implements `hdmi-hal`'s new required `HdmiPhy::set_frl_output`, forwarding it
+  as the new `PhyCall::SetFrlOutput(FrlOutput)` event. `PhyCall` is `#[non_exhaustive]`,
+  so matches with a wildcard arm are unaffected.
+
 ## [0.1.0] - 2026-05-27
 
 ### Added

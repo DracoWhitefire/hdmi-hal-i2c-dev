@@ -225,6 +225,7 @@ impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
 
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), Infallible>;
     fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible>;
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Infallible>;
     fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Infallible>;
     fn set_scrambling(&mut self, enabled: bool) -> Result<(), Infallible>;
 }
@@ -258,6 +259,7 @@ argument for `StubPhy`.
 pub enum PhyCall {
     SetFrlRate(HdmiForumFrl),
     SendLtp(LanePatterns),
+    SetFrlOutput(FrlOutput),
     AdjustEqualization(EqParams),
     SetScrambling(bool),
 }
