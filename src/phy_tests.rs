@@ -28,11 +28,11 @@ fn send_ltp_forwards_correct_variant() {
     let mut received = None;
     {
         let mut phy = StubPhy::new(|call| received = Some(call));
-        phy.send_ltp(LtpPattern::new(2)).unwrap();
+        phy.send_ltp(LtpPattern::Lfsr1).unwrap();
     }
     assert!(matches!(
         received,
-        Some(PhyCall::SendLtp(p)) if p.value() == 2
+        Some(PhyCall::SendLtp(LtpPattern::Lfsr1))
     ));
 }
 
@@ -72,7 +72,7 @@ fn callback_is_invoked_once_per_call() {
     {
         let mut phy = StubPhy::new(|_| count += 1);
         phy.set_frl_rate(HdmiForumFrl::NotSupported).unwrap();
-        phy.send_ltp(LtpPattern::new(1)).unwrap();
+        phy.send_ltp(LtpPattern::Lfsr0).unwrap();
         phy.adjust_equalization(EqParams::new()).unwrap();
         phy.set_scrambling(true).unwrap();
     }
@@ -83,7 +83,7 @@ fn callback_is_invoked_once_per_call() {
 fn noop_stub_does_not_panic() {
     let mut phy = StubPhy::new(|_| {});
     phy.set_frl_rate(HdmiForumFrl::Rate3Gbps3Lanes).unwrap();
-    phy.send_ltp(LtpPattern::new(3)).unwrap();
+    phy.send_ltp(LtpPattern::Lfsr2).unwrap();
     phy.adjust_equalization(EqParams::new()).unwrap();
     phy.set_scrambling(false).unwrap();
 }
