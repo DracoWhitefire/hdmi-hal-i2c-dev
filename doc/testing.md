@@ -47,10 +47,10 @@ Gated behind `--features integration`. Requires the `i2c-stub` kernel module and
 device node with appropriate permissions. See [`doc/setup.md`](setup.md) for setup
 instructions. **Not run in standard CI.** Must be run before any release.
 
-These tests exercise the full `I2C_RDWR` ioctl path through `I2cDevTransport` and
-validate things that the Tier 1 tests cannot: that messages are constructed correctly,
-that the slave address 0x54 is set, and that the ioctl round-trip through the kernel
-produces correct results.
+These tests exercise the full SMBus byte-data (`I2C_SMBUS`) ioctl path through
+`I2cDevTransport` and validate things that the Tier 1 tests cannot: that messages are
+constructed correctly, that the slave address 0x54 is set, and that the ioctl round-trip
+through the kernel produces correct results.
 
 **Covered:**
 - An unwritten register reads back as `0x00` (stub initialises all registers to zero)
