@@ -5,7 +5,7 @@
 use core::convert::Infallible;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
+use hdmi_hal::phy::{EqParams, HdmiPhy, LanePatterns};
 
 /// A structured description of a single [`HdmiPhy`] method invocation.
 ///
@@ -25,10 +25,10 @@ pub enum PhyCall {
     ///
     /// [`HdmiPhy::set_frl_rate`]: hdmi_hal::phy::HdmiPhy::set_frl_rate
     SetFrlRate(HdmiForumFrl),
-    /// [`HdmiPhy::send_ltp`] was called with the given pattern.
+    /// [`HdmiPhy::send_ltp`] was called with the given per-lane pattern set.
     ///
     /// [`HdmiPhy::send_ltp`]: hdmi_hal::phy::HdmiPhy::send_ltp
-    SendLtp(LtpPattern),
+    SendLtp(LanePatterns),
     /// [`HdmiPhy::adjust_equalization`] was called with the given parameters.
     ///
     /// [`HdmiPhy::adjust_equalization`]: hdmi_hal::phy::HdmiPhy::adjust_equalization
@@ -82,8 +82,8 @@ impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
         Ok(())
     }
 
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), Infallible> {
-        (self.on_call)(PhyCall::SendLtp(pattern));
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible> {
+        (self.on_call)(PhyCall::SendLtp(patterns));
         Ok(())
     }
 

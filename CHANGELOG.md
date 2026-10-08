@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
-- **`PhyCall::SendLtp` carries `hdmi-hal`'s new `LtpPattern` enum.** `LtpPattern` is now a
-  `#[non_exhaustive]` enum with the HDMI 2.1 pattern values (1 = all ones, 2 = all zeros,
+- **`LtpPattern` (from `hdmi-hal`, carried by `PhyCall::SendLtp`) is now a
+  `#[non_exhaustive]` enum** with the HDMI 2.1 pattern values (1 = all ones, 2 = all zeros,
   3 = Nyquist clock, 4 = DDE compliance, 5–8 = LFSR 0–3); `LtpPattern::new(u8)` is gone.
-  Match on the variants (`PhyCall::SendLtp(LtpPattern::Lfsr0)` etc.).
+  Match on the variants (`LtpPattern::Lfsr0` etc.).
+- **`PhyCall::SendLtp` carries the full per-lane pattern set** (`LanePatterns`), following
+  `hdmi-hal`'s new `HdmiPhy::send_ltp(patterns: LanePatterns)`. `None` on a lane means no
+  training pattern; `None` on every lane stops the training patterns.
 
 ## [0.1.0] - 2026-05-27
 

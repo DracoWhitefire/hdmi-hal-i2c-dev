@@ -1,4 +1,5 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
+use hdmi_hal::phy::LtpPattern;
 
 use super::*;
 
@@ -28,11 +29,22 @@ fn send_ltp_forwards_correct_variant() {
     let mut received = None;
     {
         let mut phy = StubPhy::new(|call| received = Some(call));
-        phy.send_ltp(LtpPattern::Lfsr1).unwrap();
+        phy.send_ltp(LanePatterns {
+            lane0: Some(LtpPattern::Lfsr0),
+            lane1: Some(LtpPattern::Lfsr1),
+            lane2: Some(LtpPattern::Lfsr2),
+            lane3: None,
+        })
+        .unwrap();
     }
     assert!(matches!(
         received,
-        Some(PhyCall::SendLtp(LtpPattern::Lfsr1))
+        Some(PhyCall::SendLtp(LanePatterns {
+            lane0: Some(LtpPattern::Lfsr0),
+            lane1: Some(LtpPattern::Lfsr1),
+            lane2: Some(LtpPattern::Lfsr2),
+            lane3: None,
+        }))
     ));
 }
 
@@ -72,7 +84,7 @@ fn callback_is_invoked_once_per_call() {
     {
         let mut phy = StubPhy::new(|_| count += 1);
         phy.set_frl_rate(HdmiForumFrl::NotSupported).unwrap();
-        phy.send_ltp(LtpPattern::Lfsr0).unwrap();
+        phy.send_ltp(LanePatterns::default()).unwrap();
         phy.adjust_equalization(EqParams::new()).unwrap();
         phy.set_scrambling(true).unwrap();
     }
@@ -83,7 +95,7 @@ fn callback_is_invoked_once_per_call() {
 fn noop_stub_does_not_panic() {
     let mut phy = StubPhy::new(|_| {});
     phy.set_frl_rate(HdmiForumFrl::Rate3Gbps3Lanes).unwrap();
-    phy.send_ltp(LtpPattern::Lfsr2).unwrap();
+    phy.send_ltp(LanePatterns::default()).unwrap();
     phy.adjust_equalization(EqParams::new()).unwrap();
     phy.set_scrambling(false).unwrap();
 }
