@@ -1,5 +1,5 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::LtpPattern;
+use hdmi_hal::phy::{LtpPattern, TxFfeLevel};
 
 use super::*;
 
@@ -82,6 +82,22 @@ fn adjust_equalization_forwards_correct_variant() {
         phy.adjust_equalization(EqParams::new()).unwrap();
     }
     assert!(matches!(received, Some(PhyCall::AdjustEqualization(_))));
+}
+
+#[test]
+fn adjust_equalization_forwards_per_lane_tx_ffe_levels() {
+    let mut params = EqParams::new();
+    params.lane1.tx_ffe_level = TxFfeLevel::MAX;
+    let mut received = None;
+    {
+        let mut phy = StubPhy::new(|call| received = Some(call));
+        phy.adjust_equalization(params).unwrap();
+    }
+    assert!(matches!(
+        received,
+        Some(PhyCall::AdjustEqualization(p))
+            if p == params && p.lane0.tx_ffe_level.value() == 0 && p.lane1.tx_ffe_level.value() == 7
+    ));
 }
 
 #[test]
