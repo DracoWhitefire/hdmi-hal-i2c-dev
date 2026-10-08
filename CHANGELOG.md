@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-05-27
+
 ### Added
 
 - `I2cDevTransport` — implements `ScdcTransport` over a `/dev/i2c-N` device node via
-  compound `I2C_RDWR` ioctl transactions to the SCDC slave address (0x54).
+  SMBus byte-data ioctls (`I2C_SMBUS`) to the SCDC slave address (0x54).
 - `StubPhy<F>` — implements `HdmiPhy` with a caller-supplied callback; forwards each PHY
   call as a `PhyCall` event and returns `Ok(())`. `type Error = Infallible`.
 - `PhyCall` — structured event type describing a single `HdmiPhy` method invocation;
