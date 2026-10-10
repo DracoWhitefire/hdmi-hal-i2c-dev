@@ -41,6 +41,20 @@ variants following `Documentation/i2c/fault-codes.rst`.
 - Unrecognised errno → `Unknown { errno }`
 - Zero errno → `Unknown { errno: 0 }` (produced by the partial-completion path)
 
+### `StubPhy` (in `src/phy_tests.rs`)
+
+Unit tests for the PHY stub, which forwards every `HdmiPhy` call to a callback as a
+`PhyCall`.
+
+**Covered:**
+- Each `HdmiPhy` method forwards the matching `PhyCall` variant with its arguments:
+  `set_frl_rate`, `send_ltp`, `set_frl_output` (`GapOnly` and `Active`),
+  `adjust_equalization` (including per-lane TxFFE levels) and `set_scrambling` (on and
+  off)
+- The callback runs once per call
+- A stub with a no-op callback accepts calls
+- Recorded calls compare as a whole sequence (`PhyCall` is `Copy` and `Eq`)
+
 ## Tier 2 — `i2c-stub` integration tests
 
 Gated behind `--features integration`. Requires the `i2c-stub` kernel module and a
@@ -66,5 +80,3 @@ through the kernel produces correct results.
   errno→`I2cErrorKind` mapping is validated by the Tier 1 unit tests.
 - `connector_ddc_adapter` end-to-end against a real sysfs tree — the Tier 1 synthetic
   tests are sufficient; the sysfs parsing logic has no dependency on a live system.
-- `StubPhy` — its correctness is trivially established by reading the implementation;
-  it has no non-trivial logic to test.
