@@ -18,7 +18,7 @@ use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 /// care about.
 ///
 /// [`HdmiPhy`]: hdmi_hal::phy::HdmiPhy
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PhyCall {
     /// [`HdmiPhy::set_frl_rate`] was called with the given rate.

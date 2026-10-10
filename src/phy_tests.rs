@@ -18,10 +18,10 @@ fn set_frl_rate_forwards_correct_variant() {
         let mut phy = StubPhy::new(|call| received = Some(call));
         phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
     }
-    assert!(matches!(
+    assert_eq!(
         received,
         Some(PhyCall::SetFrlRate(HdmiForumFrl::Rate6Gbps4Lanes))
-    ));
+    );
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn send_ltp_forwards_correct_variant() {
         })
         .unwrap();
     }
-    assert!(matches!(
+    assert_eq!(
         received,
         Some(PhyCall::SendLtp(LanePatterns {
             lane0: Some(LtpPattern::Lfsr0),
@@ -45,7 +45,7 @@ fn send_ltp_forwards_correct_variant() {
             lane2: Some(LtpPattern::Lfsr2),
             lane3: None,
         }))
-    ));
+    );
 }
 
 #[test]
@@ -142,4 +142,22 @@ fn noop_stub_does_not_panic() {
     phy.set_frl_output(FrlOutput::Active).unwrap();
     phy.adjust_equalization(EqParams::new()).unwrap();
     phy.set_scrambling(false).unwrap();
+}
+
+#[test]
+fn recorded_calls_compare_as_a_sequence() {
+    // `PhyCall` is `Copy` and `Eq`: a test can record calls and compare the whole log.
+    let mut calls = std::vec::Vec::new();
+    {
+        let mut phy = StubPhy::new(|call| calls.push(call));
+        phy.set_frl_rate(HdmiForumFrl::Rate12Gbps4Lanes).unwrap();
+        phy.set_frl_output(FrlOutput::GapOnly).unwrap();
+    }
+    assert_eq!(
+        calls,
+        [
+            PhyCall::SetFrlRate(HdmiForumFrl::Rate12Gbps4Lanes),
+            PhyCall::SetFrlOutput(FrlOutput::GapOnly),
+        ]
+    );
 }

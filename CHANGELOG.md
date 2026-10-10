@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `PhyCall` derives `Clone`, `Copy`, `PartialEq` and `Eq`, so tests can record the calls
+  and compare them as a whole.
 - `StubPhy` implements `hdmi-hal`'s new required `HdmiPhy::set_frl_output`, forwarding it
   as the new `PhyCall::SetFrlOutput(FrlOutput)` event. `PhyCall` is `#[non_exhaustive]`,
   so matches with a wildcard arm are unaffected.
