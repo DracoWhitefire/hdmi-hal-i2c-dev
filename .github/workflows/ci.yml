@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  # Not main: the only PRs into main are release-tag's release-promote/* PRs,
+  # whose content already passed CI on develop. Opened by github-actions[bot],
+  # their runs would be held for approval and end as action_required/failure.
+  pull_request:
+    branches: [develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+
+      - name: Docs
+        run: cargo rustdoc --locked -- -D missing_docs
+
+      - name: Test
+        run: cargo test --locked
+
+      # NOTE: `cargo test --locked --features integration` is intentionally NOT
+      # run here. The Tier 2 integration tests require the i2c-stub kernel module
+      # and a /dev/i2c-N device node; they cannot run in a standard CI environment.
+      # See doc/setup.md for how to run them locally before a release.
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-coverage-
+
+      - name: Measure coverage
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov --no-report
+          LINES=$(cargo llvm-cov report --json --summary-only \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(round(d['data'][0]['totals']['lines']['percent'], 2))")
+          echo "COVERAGE=${LINES}" >> "$GITHUB_ENV"
+
+      - name: Check coverage
+        run: |
+          BASELINE=$(cat .coverage-baseline)
+          echo "Coverage: ${COVERAGE}%  Baseline: ${BASELINE}%"
+          python3 -c "import sys; sys.exit(0 if float('${COVERAGE}') >= float('${BASELINE}') - 0.1 else 1)" \
+            || { echo "Coverage dropped below baseline"; exit 1; }
+
+      - name: Update baseline if improved
+        if: github.event_name == 'push'
+        run: |
+          BASELINE=$(cat .coverage-baseline)
+          if awk "BEGIN { exit !(${COVERAGE} > ${BASELINE}) }"; then
+            LC_NUMERIC=C printf '%.2f\n' "${COVERAGE}" > .coverage-baseline
+            echo "Baseline updated: ${BASELINE} -> ${COVERAGE}"
+          else
+            echo "No update needed (${COVERAGE} <= ${BASELINE})"
+          fi
+
+      - name: Open PR if baseline changed
+        if: github.event_name == 'push'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ci/coverage-ratchet
+          commit-message: "ci: ratchet coverage baseline to ${{ env.COVERAGE }}%"
+          title: "ci: ratchet coverage baseline to ${{ env.COVERAGE }}%"
+          body: |
+            Coverage improved to `${{ env.COVERAGE }}%`. Updated `.coverage-baseline`.
+
+            *Opened automatically by the coverage CI job.*
+          add-paths: .coverage-baseline

@@ -5,8 +5,8 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use i2cdev::core::{I2CMessage, I2CTransfer};
-use i2cdev::linux::{LinuxI2CBus, LinuxI2CError, LinuxI2CMessage};
+use i2cdev::core::I2CDevice;
+use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 
 use hdmi_hal::scdc::ScdcTransport;
 
@@ -15,10 +15,32 @@ use crate::error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase}
 /// SCDC slave address, fixed by the HDMI specification (HDMI 2.1 Table 10-3).
 const SCDC_ADDRESS: u16 = 0x54;
 
+/// A narrow seam over the two SMBus operations [`I2cDevTransport`] requires.
+///
+/// This trait is crate-private. It exists solely to allow a lightweight mock
+/// in unit tests without exposing the seam in the public API.
+pub(crate) trait SmbusDevice {
+    fn smbus_read_byte_data(&mut self, reg: u8) -> Result<u8, LinuxI2CError>;
+    fn smbus_write_byte_data(&mut self, reg: u8, value: u8) -> Result<(), LinuxI2CError>;
+}
+
+impl SmbusDevice for LinuxI2CDevice {
+    fn smbus_read_byte_data(&mut self, reg: u8) -> Result<u8, LinuxI2CError> {
+        I2CDevice::smbus_read_byte_data(self, reg)
+    }
+
+    fn smbus_write_byte_data(&mut self, reg: u8, value: u8) -> Result<(), LinuxI2CError> {
+        I2CDevice::smbus_write_byte_data(self, reg, value)
+    }
+}
+
 /// An SCDC transport backed by a `/dev/i2c-N` device node.
 ///
-/// Implements [`ScdcTransport`] by issuing compound `I2C_RDWR` transactions
-/// to the SCDC slave address (0x54) on the specified adapter.
+/// Implements [`ScdcTransport`] by issuing SMBus byte-data operations
+/// (`I2C_SMBUS`) to the SCDC slave address (0x54) on the specified adapter.
+/// SMBus byte-data read is a combined write-then-read in a single ioctl,
+/// semantically equivalent to a raw I²C combined transaction for SCDC's
+/// single-byte register model.
 ///
 /// # Error recovery
 ///
@@ -28,11 +50,19 @@ const SCDC_ADDRESS: u16 = 0x54;
 /// reconstruct the transport via [`I2cDevTransport::open`].
 ///
 /// [`ScdcTransport`]: hdmi_hal::scdc::ScdcTransport
-pub struct I2cDevTransport {
-    bus: Mutex<LinuxI2CBus>,
+// `SmbusDevice` is intentionally `pub(crate)`: it is a test seam, not a
+// public extension point. The bound on `D` is therefore more private than the
+// struct itself, which the compiler warns about. The warning is expected and
+// correct here — external callers cannot name `SmbusDevice` and therefore
+// cannot instantiate `I2cDevTransport<D>` with any `D` other than the default
+// `LinuxI2CDevice`. That is exactly the desired constraint.
+#[allow(private_bounds)]
+#[derive(Debug)]
+pub struct I2cDevTransport<D: SmbusDevice = LinuxI2CDevice> {
+    device: Mutex<D>,
 }
 
-impl I2cDevTransport {
+impl I2cDevTransport<LinuxI2CDevice> {
     /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
     ///
     /// The calling process must have read/write permission on the device node
@@ -43,75 +73,64 @@ impl I2cDevTransport {
     /// Returns [`I2cDevError::DeviceOpenFailed`] if the device cannot be opened.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError> {
         let path = path.as_ref();
-        let bus = LinuxI2CBus::new(path).map_err(|e| I2cDevError::DeviceOpenFailed {
-            path: path.to_path_buf(),
-            source: e.into(),
-        })?;
+        let device =
+            LinuxI2CDevice::new(path, SCDC_ADDRESS).map_err(|e| I2cDevError::DeviceOpenFailed {
+                path: path.to_path_buf(),
+                source: e.into(),
+            })?;
         Ok(Self {
-            bus: Mutex::new(bus),
+            device: Mutex::new(device),
         })
     }
 }
 
-impl ScdcTransport for I2cDevTransport {
+// Same reasoning as the struct: `SmbusDevice` is `pub(crate)` by design, so
+// the bound is more private than the impl block. Suppressed here for the same
+// reason — this impl exists solely for tests and is not part of the public API.
+#[cfg(test)]
+#[allow(private_bounds)]
+impl<D: SmbusDevice> I2cDevTransport<D> {
+    /// Construct a transport from an already-opened device.
+    ///
+    /// Intended for unit tests; production code should use [`I2cDevTransport::open`].
+    pub(crate) fn from_device(device: D) -> Self {
+        Self {
+            device: Mutex::new(device),
+        }
+    }
+}
+
+impl<D: SmbusDevice> ScdcTransport for I2cDevTransport<D> {
     type Error = I2cDevError;
 
     /// Read one byte from the given SCDC register.
     ///
-    /// Issues a compound two-message `I2C_RDWR` transaction: a one-byte write
-    /// (register address) followed by a one-byte read, in a single ioctl call.
-    /// The kernel holds the bus for the duration, making the read atomic.
+    /// Issues an SMBus byte-data read (`I2C_SMBUS`): a combined write of the
+    /// register address followed by a read of one byte, in a single ioctl
+    /// call. The kernel holds the bus for the duration, making the read atomic.
     fn read(&self, reg: u8) -> Result<u8, I2cDevError> {
-        let write_data = [reg];
-        let mut read_buf = [0u8; 1];
-        let mut bus = self
-            .bus
+        let mut device = self
+            .device
             .lock()
-            .expect("I2cDevTransport bus mutex was poisoned");
-        let mut msgs = [
-            LinuxI2CMessage::write(&write_data).with_address(SCDC_ADDRESS),
-            LinuxI2CMessage::read(&mut read_buf).with_address(SCDC_ADDRESS),
-        ];
-        match bus.transfer(&mut msgs) {
-            Ok(n) if n >= 2 => Ok(read_buf[0]),
-            Ok(n) => {
-                // Partial completion: the first `n` messages succeeded; message
-                // `n` failed without a recoverable errno (adapter returned a
-                // partial count rather than an error). This is unusual in
-                // practice — most adapters return an error on any failure.
-                let phase = if n == 0 {
-                    MessagePhase::Write { register: reg }
-                } else {
-                    MessagePhase::Read { register: reg }
-                };
-                Err(I2cDevError::Transaction(I2cTransactionError {
-                    phase,
-                    kind: I2cErrorKind::Unknown { errno: 0 },
-                }))
-            }
-            Err(e) => Err(I2cDevError::Transaction(I2cTransactionError {
-                // When the ioctl returns an error we cannot determine which
-                // message in the batch failed; the write phase is used because
-                // the write message is first and is the most likely site of a
-                // bus error (e.g. address NACK).
+            .expect("I2cDevTransport device mutex was poisoned");
+        device.smbus_read_byte_data(reg).map_err(|e| {
+            I2cDevError::Transaction(I2cTransactionError {
                 phase: MessagePhase::Write { register: reg },
                 kind: map_errno(to_raw_errno(e)),
-            })),
-        }
+            })
+        })
     }
 
     /// Write one byte to the given SCDC register.
     ///
-    /// Issues a single two-byte `I2C_RDWR` write message containing the
+    /// Issues an SMBus byte-data write (`I2C_SMBUS`): a single write of the
     /// register address byte followed by the value byte.
     fn write(&mut self, reg: u8, value: u8) -> Result<(), I2cDevError> {
-        let write_data = [reg, value];
-        let mut bus = self
-            .bus
+        let mut device = self
+            .device
             .lock()
-            .expect("I2cDevTransport bus mutex was poisoned");
-        let mut msgs = [LinuxI2CMessage::write(&write_data).with_address(SCDC_ADDRESS)];
-        bus.transfer(&mut msgs).map(|_| ()).map_err(|e| {
+            .expect("I2cDevTransport device mutex was poisoned");
+        device.smbus_write_byte_data(reg, value).map_err(|e| {
             I2cDevError::Transaction(I2cTransactionError {
                 phase: MessagePhase::Write { register: reg },
                 kind: map_errno(to_raw_errno(e)),
@@ -150,77 +169,5 @@ pub(crate) fn map_errno(errno: i32) -> I2cErrorKind {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enxio_maps_to_address_nack() {
-        assert!(matches!(map_errno(libc::ENXIO), I2cErrorKind::AddressNack));
-    }
-
-    #[test]
-    fn eagain_maps_to_arbitration_lost() {
-        assert!(matches!(
-            map_errno(libc::EAGAIN),
-            I2cErrorKind::ArbitrationLost
-        ));
-    }
-
-    #[test]
-    fn etimedout_maps_to_clock_stretch_timeout() {
-        assert!(matches!(
-            map_errno(libc::ETIMEDOUT),
-            I2cErrorKind::ClockStretchTimeout
-        ));
-    }
-
-    #[test]
-    fn ebusy_maps_to_bus_busy() {
-        assert!(matches!(map_errno(libc::EBUSY), I2cErrorKind::BusBusy));
-    }
-
-    #[test]
-    fn eproto_maps_to_bus_protocol_error() {
-        assert!(matches!(
-            map_errno(libc::EPROTO),
-            I2cErrorKind::BusProtocolError
-        ));
-    }
-
-    #[test]
-    fn eshutdown_maps_to_adapter_gone() {
-        assert!(matches!(
-            map_errno(libc::ESHUTDOWN),
-            I2cErrorKind::AdapterGone
-        ));
-    }
-
-    #[test]
-    fn enodev_maps_to_adapter_gone() {
-        assert!(matches!(map_errno(libc::ENODEV), I2cErrorKind::AdapterGone));
-    }
-
-    #[test]
-    fn eio_maps_to_unknown() {
-        // EIO is the only errno produced by amdgpu, regardless of the actual
-        // bus condition. It has no fault-codes.rst mapping.
-        assert!(matches!(
-            map_errno(libc::EIO),
-            I2cErrorKind::Unknown { errno } if errno == libc::EIO
-        ));
-    }
-
-    #[test]
-    fn unrecognised_errno_maps_to_unknown() {
-        assert!(matches!(
-            map_errno(9999),
-            I2cErrorKind::Unknown { errno: 9999 }
-        ));
-    }
-
-    #[test]
-    fn zero_errno_maps_to_unknown() {
-        // Produced by partial-completion path (no errno available).
-        assert!(matches!(map_errno(0), I2cErrorKind::Unknown { errno: 0 }));
-    }
-}
+#[path = "transport_tests.rs"]
+mod tests;

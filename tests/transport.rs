@@ -1,9 +1,8 @@
 //! Integration tests for [`I2cDevTransport`] against the Linux `i2c-stub` kernel module.
 //!
-//! These tests exercise the full `I2C_RDWR` ioctl path against a real kernel
-//! I²C adapter. They validate compound message construction, slave address
-//! correctness, and register read/write semantics — things that cannot be
-//! verified without a responding kernel device.
+//! These tests exercise the SMBus byte-data ioctl path against a real kernel
+//! I²C adapter. They validate register read/write semantics and error handling
+//! — things that cannot be verified without a responding kernel device.
 //!
 //! # Setup
 //!
@@ -47,10 +46,10 @@
 //! # What is and is not covered
 //!
 //! **Covered:**
-//! - Compound two-message construction for SCDC reads (write-then-read in a
-//!   single `I2C_RDWR` ioctl)
-//! - Single two-byte message construction for SCDC writes
-//! - Slave address 0x54 is set on all messages
+//! - SMBus byte-data read (`I2C_SMBUS`): combined write of register address
+//!   then read of one byte, in a single ioctl
+//! - SMBus byte-data write (`I2C_SMBUS`): write of register address and value
+//! - Slave address 0x54 is bound at device-open time
 //! - Read/write round-trip correctness against the stub register map
 //! - `AddressNack` (or `Unknown { errno: EIO }` on `amdgpu`) when the slave
 //!   address is not registered
@@ -59,15 +58,15 @@
 //! - Bus errors, clock stretch timeouts, and arbitration loss — `i2c-stub`
 //!   always ACKs registered addresses; these conditions require misbehaving
 //!   hardware. Their errno→`I2cErrorKind` mapping is validated by the Tier 1
-//!   unit tests in `src/transport.rs`.
+//!   unit tests in `src/transport_tests.rs`.
 
 #![cfg(feature = "integration")]
 
 use std::path::PathBuf;
 
 use hdmi_hal::scdc::ScdcTransport;
-use hdmi_hal_i2c_dev::transport::I2cDevTransport;
 use hdmi_hal_i2c_dev::I2cDevError;
+use hdmi_hal_i2c_dev::transport::I2cDevTransport;
 
 /// Return the adapter path for `var`, or `None` if the env var is unset.
 ///
@@ -81,9 +80,10 @@ fn adapter_path(var: &str) -> Option<PathBuf> {
 
 fn open_transport(var: &str) -> Option<I2cDevTransport> {
     let path = adapter_path(var)?;
-    Some(I2cDevTransport::open(&path).unwrap_or_else(|e| {
-        panic!("failed to open {}: {e}", path.display())
-    }))
+    Some(
+        I2cDevTransport::open(&path)
+            .unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display())),
+    )
 }
 
 // --- Read/write correctness --------------------------------------------------
@@ -143,10 +143,7 @@ fn read_produces_error_when_slave_not_registered() {
         .expect_err("expected error for unregistered address, got Ok");
     match err {
         I2cDevError::Transaction(ref e) => {
-            eprintln!(
-                "NACK test: phase={:?} kind={:?}",
-                e.phase, e.kind
-            );
+            eprintln!("NACK test: phase={:?} kind={:?}", e.phase, e.kind);
             // On a compliant adapter this will be AddressNack.
             // On amdgpu it will be Unknown { errno: EIO }.
             // Both are correct; the test just verifies an error is produced

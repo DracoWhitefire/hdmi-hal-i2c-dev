@@ -79,9 +79,9 @@ hdmi-hal  ──►  hdmi-hal-i2c-dev
 i2cdev    ──►  hdmi-hal-i2c-dev
 ```
 
-- `hdmi-hal` — `ScdcTransport`, `HdmiPhy`, `EqParams`, `LtpPattern`
+- `hdmi-hal` — `ScdcTransport`, `HdmiPhy`, `EqParams`, `LanePatterns`, `FrlOutput`
 - `i2cdev` — safe Rust wrappers over the Linux `i2c-dev` kernel interface; provides the
-  `I2C_RDWR` ioctl binding that backs `I2cDevTransport`. This is what allows
+  `I2C_SMBUS` ioctl binding that backs `I2cDevTransport`. This is what allows
   `#![forbid(unsafe_code)]` to hold: all unsafe is contained inside `i2cdev`.
 - `std` — file I/O, sysfs path resolution
 
@@ -150,7 +150,7 @@ the time `open` is called — if an unrelated I²C adapter appeared or disappear
 interim, `/dev/i2c-N` may have been reassigned. This window cannot be closed in userspace.
 Callers that require precise control over open timing — for example, a privileged parent
 opening the device before dropping privileges — should open the file themselves and use
-`I2cDevTransport::from_file`.
+`LinuxI2CDevice::new` directly with the raw file descriptor.
 
 ---
 
@@ -159,40 +159,36 @@ opening the device before dropping privileges — should open the file themselve
 ### `I2cDevTransport`
 
 Implements `ScdcTransport` for a `/dev/i2c-N` device. On construction it opens the device
-file; each `read` and `write` call issues an I²C transaction to the SCDC slave address
-(0x54).
+file and sets the slave address to 0x54 via `I2C_SLAVE`; each `read` and `write` call
+issues an SMBus transaction to the SCDC slave address.
 
 The SCDC register protocol is:
-- **Write:** a single `I2C_RDWR` message — a two-byte I²C write containing the register
-  address byte followed by the value byte.
-- **Read:** a compound two-message `I2C_RDWR` transaction — a one-byte I²C write
-  (register address) and a one-byte I²C read, issued together in a single ioctl call.
+- **Write:** `smbus_write_byte_data(reg, value)` — an `I2C_SMBUS` ioctl issuing a two-byte
+  write containing the register address byte followed by the value byte.
+- **Read:** `smbus_read_byte_data(reg)` — an `I2C_SMBUS` ioctl issuing a combined
+  write-then-read: the register address byte is written, then one byte is read back, all
+  within a single ioctl call.
 
-Both are issued via `LinuxI2CBus::transfer` from `i2cdev`, which passes all messages in a
-single `I2C_RDWR` ioctl. The kernel holds the bus for the duration of the call, making
-compound reads atomic. This is important for CED counters, which may increment between an
-address write and a data read if the two were issued as separate ioctl calls.
+Both operations are issued via `LinuxI2CDevice` from `i2cdev`. The kernel holds the bus for
+the duration of the ioctl, making reads atomic. This is important for CED counters, which
+may increment between an address write and a data read if the two were issued as separate
+ioctl calls.
+
+SMBus byte-data semantics are equivalent to raw I²C for SCDC's single-byte register model,
+and work on both `i2c-stub` (for integration tests) and real DDC adapters.
 
 ```rust
-pub struct I2cDevTransport { /* LinuxI2CBus */ }
+pub struct I2cDevTransport { /* LinuxI2CDevice in Mutex */ }
 
 impl I2cDevTransport {
     /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
-
-    /// Construct a transport from an already-open file.
-    ///
-    /// Intended for privilege-separation patterns where the `/dev/i2c-N` device
-    /// is opened by a privileged parent process and the `File` is passed to an
-    /// unprivileged child. The caller is responsible for ensuring the file refers
-    /// to a valid `i2c-dev` device node.
-    pub fn from_file(file: std::fs::File) -> Self;
 }
 
 impl ScdcTransport for I2cDevTransport {
     type Error = I2cDevError;
 
-    fn read(&mut self, reg: u8) -> Result<u8, I2cDevError>;
+    fn read(&self, reg: u8) -> Result<u8, I2cDevError>;
     fn write(&mut self, reg: u8, value: u8) -> Result<(), I2cDevError>;
 }
 ```
@@ -228,7 +224,8 @@ impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
     type Error = Infallible;
 
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), Infallible>;
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), Infallible>;
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible>;
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Infallible>;
     fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Infallible>;
     fn set_scrambling(&mut self, enabled: bool) -> Result<(), Infallible>;
 }
@@ -261,7 +258,8 @@ argument for `StubPhy`.
 #[non_exhaustive]
 pub enum PhyCall {
     SetFrlRate(HdmiForumFrl),
-    SendLtp(LtpPattern),
+    SendLtp(LanePatterns),
+    SetFrlOutput(FrlOutput),
     AdjustEqualization(EqParams),
     SetScrambling(bool),
 }
@@ -300,7 +298,13 @@ pub struct I2cTransactionError {
     pub kind: I2cErrorKind,
 }
 
-/// Which message in the compound SCDC transaction failed.
+/// Which phase of the SCDC transaction failed.
+///
+/// The current SMBus-backed implementation always reports `Write` — the
+/// `I2C_SMBUS` ioctl does not distinguish between the outbound address byte
+/// and the inbound data byte when returning an error. `Read` is retained for
+/// future implementations that use raw `I2C_RDWR` and can isolate the failing
+/// message by index.
 pub enum MessagePhase {
     /// The write-phase message failed (register address byte, or write data).
     Write { register: u8 },
@@ -339,10 +343,11 @@ pub enum I2cErrorKind {
 
 ### Below: Linux `i2c-dev` kernel interface
 
-`I2cDevTransport` is backed by `ioctl(fd, I2C_RDWR, ...)` calls against an open
-`/dev/i2c-N` file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux
-desktop systems it is either built in or loaded automatically. The calling process needs
-read/write permission on the device node (typically via the `i2c` group).
+`I2cDevTransport` is backed by `ioctl(fd, I2C_SLAVE, 0x54)` on open (to set the slave
+address) and `ioctl(fd, I2C_SMBUS, ...)` per transaction, against an open `/dev/i2c-N`
+file descriptor. The `i2c-dev` kernel module must be loaded; on most Linux desktop systems
+it is either built in or loaded automatically. The calling process needs read/write
+permission on the device node (typically via the `i2c` group).
 
 The SCDC slave address (0x54) is fixed by the HDMI specification. This crate does not
 expose it as a parameter.
@@ -425,15 +430,14 @@ No kernel involvement. Runs in CI on any Linux host.
 
 **`I2cDevTransport`** is tested against the Linux `i2c-stub` kernel module, which
 registers a fake I²C device at a specified address and exposes it as a real `/dev/i2c-N`
-device node. Transactions go through the full `I2C_RDWR` ioctl path; the stub responds
-to reads and records writes.
+device node. Transactions go through the full `I2C_SMBUS` ioctl path; the stub responds
+to SMBus byte-data reads and records writes.
 
 This tier validates:
-- correct compound message construction for SCDC reads (write-then-read in a single ioctl),
-- correct single-message construction for SCDC writes,
-- slave address 0x54 is set on all messages,
-- `AddressNack` is produced when a transaction targets an address not registered with
-  the stub.
+- correct SMBus byte-data read (atomic combined write-then-read in a single ioctl),
+- correct SMBus byte-data write,
+- slave address 0x54 is set at device open time,
+- an error is produced when a transaction targets an address not registered with the stub.
 
 These tests require `i2c-stub` to be loaded (`modprobe i2c-stub`) and the calling process
 to have write permission on the resulting device node. They are gated behind a feature flag
@@ -486,192 +490,3 @@ not appropriate here.
 `/sys/class/drm/<connector>/ddc`. Systems with multiple DRM cards are expected to follow
 the same structure (e.g. `card1-HDMI-A-1`). This has not been tested on a multi-GPU system
 and may require adjustment if the sysfs layout differs.
-
----
-
-## Implementation Plan
-
-> This section tracks what needs to be built. Drop it once the crate reaches its first
-> release.
-
-### Step 1 — upstream crates (feature branches)
-
-The `ScdcTransport::read` signature change from `&mut self` to `&self` propagates to all
-crates that define or implement the trait:
-
-- **`hdmi-hal`** — change the trait definition.
-- **`hdmi-hal-async`** — change the async trait definition.
-- **`culvert`** — update the `ScdcTransport` implementation.
-- **`culvert-async`** — update the async `ScdcTransport` implementation.
-
-`HdmiPhy` is unaffected. Publish new versions of all four crates before releasing this
-one.
-
-### Step 2 — Cargo.toml
-
-- Add a path dependency on the `hdmi-hal` feature branch for development.
-- Add `i2cdev` as a dependency.
-- Switch the `hdmi-hal` dependency to the published version before releasing this crate.
-
-### Step 3 — Error types
-
-Implement in `src/error.rs`:
-
-- `I2cDevError` — top-level error enum with `#[non_exhaustive]`
-- `I2cTransactionError` — struct with `phase: MessagePhase` and `kind: I2cErrorKind`
-- `MessagePhase` — enum with `Write { register: u8 }` and `Read { register: u8 }`
-- `I2cErrorKind` — enum with `#[non_exhaustive]`; map `errno` values from
-  `LinuxI2CError::Errno` to variants per `fault-codes.rst`; fall back to
-  `Unknown { errno: i32 }` for unrecognised values
-
-### Step 4 — `connector_ddc_adapter`
-
-Implement in `src/discovery.rs`:
-
-- Accept a connector name, resolve `/sys/class/drm/<connector>/ddc`
-- Return `ConnectorNotFound` if the connector directory is absent
-- Return `ConnectorHasNoDdcAdapter` if the `ddc` symlink is absent
-- Read the symlink target, extract the final path component, match against `i2c-<N>`
-- Return `DdcAdapterIndexUnparseable { symlink_target }` if the pattern does not match
-- Return `/dev/i2c-<N>` as a `PathBuf` on success
-
-### Step 5 — `I2cDevTransport`
-
-Implement in `src/transport.rs`:
-
-- Wrap `LinuxI2CBus` in a `Mutex` to provide interior mutability, satisfying the `&self`
-  signature of `ScdcTransport::read`
-- `open(path)` — open the device file, construct `LinuxI2CBus`, wrap in `Mutex`
-- `from_file(File)` — convert `File` to `LinuxI2CBus` via `AsRawFd`, wrap in `Mutex`
-- `ScdcTransport::read` — lock the bus, issue a compound two-message `I2C_RDWR`
-  transaction via `LinuxI2CBus::transfer`; map `LinuxI2CError` to `I2cTransactionError`
-  with `phase: MessagePhase::Write` or `MessagePhase::Read` depending on which message
-  in the batch failed (determined by the count returned from `transfer`)
-- `ScdcTransport::write` — lock the bus, issue a single two-byte write message
-
-### Step 6 — `StubPhy<F>` and `PhyCall`
-
-Implement in `src/phy.rs`:
-
-- `PhyCall` enum with `#[derive(Debug)]` and `#[non_exhaustive]`
-- `StubPhy<F>` struct with `on_call: F`
-- `StubPhy::new(on_call: F) -> Self`
-- `HdmiPhy for StubPhy<F> where F: FnMut(PhyCall)` — each method constructs the
-  appropriate `PhyCall` variant, calls `self.on_call`, returns `Ok(())`
-
-### Step 7 — Tier 1 tests
-
-In `tests/discovery.rs` (or `#[cfg(test)]` within `src/discovery.rs`):
-
-- Use `tempfile` to construct a synthetic sysfs tree
-- Test all four outcomes: success, `ConnectorNotFound`, `ConnectorHasNoDdcAdapter`,
-  `DdcAdapterIndexUnparseable`
-
-In `#[cfg(test)]` within `src/error.rs` (or `src/transport.rs`):
-
-- Unit test the internal `LinuxI2CError` → `I2cTransactionError` mapping function
-- Construct `LinuxI2CError::Errno(e)` for each errno named in `fault-codes.rst` and
-  assert the expected `I2cErrorKind` variant
-- Include a test for an unrecognised errno asserting `Unknown { errno }`
-
-No kernel involvement; runs in standard CI.
-
-### Step 8 — Tier 2 integration tests
-
-In `tests/transport.rs`, gated behind `#[cfg(feature = "integration")]`:
-
-- Require `i2c-stub` to be loaded and a stub device registered at address 0x54
-- Test SCDC read: verify compound message construction and correct data retrieval
-- Test SCDC write: verify single message construction and register update
-- Test `AddressNack`: issue a transaction to an address not registered with the stub,
-  verify `I2cErrorKind::AddressNack` (or `Unknown { errno: EIO }` on `amdgpu` — note
-  the discrepancy if it arises)
-- Document the setup steps required to run these tests in a `README` or test module
-  doc comment
-- Note explicitly that bus errors, timeouts, and arbitration loss are not covered;
-  their mapping is validated by the Tier 1 unit tests only
-
-### Step 9 — Cargo.toml metadata
-
-Fill in the package metadata to match the rest of the stack:
-
-- `description` — one-line summary
-- `readme = "README.md"`
-- `license = "MPL-2.0"`
-- `repository` — GitHub URL once the repo is created
-- `rust-version = "1.85"` — consistent with sibling crates
-- `keywords` — e.g. `["hdmi", "i2c", "linux", "hal", "scdc"]`
-- `categories = ["hardware-support", "embedded"]` — note: no `"no-std"` since this crate is `std`-only
-- `[package.metadata.docs.rs]` block — add if docs.rs rendering requires any cfg flags
-
-### Step 10 — `src/lib.rs` crate-level docs
-
-Replace the cargo init placeholder with:
-
-- Crate-level rustdoc: one-paragraph description, usage example showing the
-  `connector_ddc_adapter` → `I2cDevTransport::open` → `Scdc::new` + `StubPhy::new` sequence
-- `#![forbid(unsafe_code)]`
-- `#![deny(missing_docs)]`
-
-All public items in all modules must have rustdoc comments. `cargo rustdoc -- -D missing_docs`
-must pass before release.
-
-### Step 11 — Supporting files
-
-Files present in all released crates in this stack:
-
-- `README.md` — crate description, badges (CI, crates.io, docs.rs, license, rustc, SLSA),
-  one-paragraph summary, usage example, links to `doc/architecture.md`
-- `CHANGELOG.md` — Keep a Changelog format; start with an `[Unreleased]` section
-- `CONTRIBUTING.md` — link to `doc/setup.md`, `doc/testing.md`, `doc/architecture.md`;
-  issue and PR guidelines consistent with sibling crates
-- `CODE_OF_CONDUCT.md` — copy from a sibling crate
-- `LICENSE` — MPL-2.0; copy from a sibling crate
-- `.coverage-baseline` — initialise to `0.00`; CI will ratchet it upward on first run
-
-### Step 12 — `doc/` companion files
-
-- `doc/setup.md` — build command, test command, how to load `i2c-stub` and set up a Tier 2
-  test environment (modprobe, device node permissions, running with `--features integration`)
-- `doc/testing.md` — testing strategy mirroring the architecture doc's Test Strategy section;
-  what Tier 1 covers, what Tier 2 covers, what is intentionally not covered and why
-- `doc/roadmap.md` — deferred work: `linux-drm` split for `connector_ddc_adapter` when a
-  second consumer appears; multi-card sysfs validation; richer errno coverage once a
-  compliant non-amdgpu adapter is available for CI
-
-### Step 13 — GitHub Actions workflows
-
-Three workflows, consistent with sibling crates:
-
-**`ci.yml`** — runs on push to `main`/`develop` and on PRs:
-- `cargo fmt --check`
-- `cargo clippy --locked -- -D warnings`
-- `cargo rustdoc --locked -- -D missing_docs`
-- `cargo test --locked`
-- `cargo test --locked --features integration` is **not** run in CI (requires hardware);
-  document this explicitly in the workflow as a comment
-- Coverage job with `cargo-llvm-cov`: measure, check against `.coverage-baseline`
-  (−0.1% tolerance), ratchet baseline upward on push, open PR if baseline improves
-
-**`audit.yml`** — runs on changes to `Cargo.toml` / `Cargo.lock`:
-- `rustsec/audit-check`
-
-**`publish.yml`** — runs on version tags (`v*.*.*`):
-- Check tag is on `main`
-- Full quality gate (fmt, clippy, docs, test) — same as CI
-- `cargo package --locked`
-- `actions/attest-build-provenance` — SLSA Build Level 2 provenance on the `.crate` file
-- `cargo publish`
-- Create GitHub release with the attested `.crate` attached and provenance verification
-  instructions
-
-Note: `fuzz.yml` is not added. The most fuzzable surface is the symlink path component
-parser in `connector_ddc_adapter`, but the logic is simple enough that Tier 1 unit tests
-cover it adequately. Revisit if the parser grows in complexity.
-
-### Step 14 — Release
-
-- Switch `hdmi-hal` dependency from path to published version
-- Publish `hdmi-hal` with the `ScdcTransport::read` signature change
-- Publish `hdmi-hal-i2c-dev`
-- Drop this section from the architecture doc

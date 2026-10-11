@@ -5,7 +5,7 @@
 use core::convert::Infallible;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
+use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 
 /// A structured description of a single [`HdmiPhy`] method invocation.
 ///
@@ -18,17 +18,21 @@ use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
 /// care about.
 ///
 /// [`HdmiPhy`]: hdmi_hal::phy::HdmiPhy
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PhyCall {
     /// [`HdmiPhy::set_frl_rate`] was called with the given rate.
     ///
     /// [`HdmiPhy::set_frl_rate`]: hdmi_hal::phy::HdmiPhy::set_frl_rate
     SetFrlRate(HdmiForumFrl),
-    /// [`HdmiPhy::send_ltp`] was called with the given pattern.
+    /// [`HdmiPhy::send_ltp`] was called with the given per-lane pattern set.
     ///
     /// [`HdmiPhy::send_ltp`]: hdmi_hal::phy::HdmiPhy::send_ltp
-    SendLtp(LtpPattern),
+    SendLtp(LanePatterns),
+    /// [`HdmiPhy::set_frl_output`] was called with the given output mode.
+    ///
+    /// [`HdmiPhy::set_frl_output`]: hdmi_hal::phy::HdmiPhy::set_frl_output
+    SetFrlOutput(FrlOutput),
     /// [`HdmiPhy::adjust_equalization`] was called with the given parameters.
     ///
     /// [`HdmiPhy::adjust_equalization`]: hdmi_hal::phy::HdmiPhy::adjust_equalization
@@ -82,8 +86,13 @@ impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
         Ok(())
     }
 
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), Infallible> {
-        (self.on_call)(PhyCall::SendLtp(pattern));
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible> {
+        (self.on_call)(PhyCall::SendLtp(patterns));
+        Ok(())
+    }
+
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Infallible> {
+        (self.on_call)(PhyCall::SetFrlOutput(output));
         Ok(())
     }
 
@@ -97,3 +106,7 @@ impl<F: FnMut(PhyCall)> HdmiPhy for StubPhy<F> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "phy_tests.rs"]
+mod tests;
