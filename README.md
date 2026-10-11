@@ -55,7 +55,7 @@ See [`doc/architecture.md`] for details.
 
 ## Documentation
 
-- [`doc/architecture.md`] — design rationale, type descriptions, test strategy, and implementation plan
+- [`doc/architecture.md`] — design rationale, type descriptions, and test strategy
 - [`doc/setup.md`] — build and test instructions, including `i2c-stub` setup for integration tests
 - [`doc/testing.md`] — what each test tier covers and why
 

@@ -36,6 +36,7 @@ pub enum I2cDevError {
 }
 
 /// The phase and kind of an I²C transaction failure.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct I2cTransactionError {
     /// Which message in the compound transaction failed.
@@ -45,6 +46,7 @@ pub struct I2cTransactionError {
 }
 
 /// Which message in the compound SCDC transaction failed.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum MessagePhase {
     /// The write-phase message failed (register address byte, or write data).

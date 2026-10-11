@@ -18,7 +18,7 @@ integration = []
 
 [dependencies]
 display-types = "0.4"
-hdmi-hal =  "0.4.1"
+hdmi-hal = "0.5"
 i2cdev = "0.6.2"
 libc = "0.2"
 

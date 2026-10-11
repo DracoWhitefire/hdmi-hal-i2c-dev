@@ -7,10 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`LtpPattern` (from `hdmi-hal`, carried by `PhyCall::SendLtp`) is now a
+  `#[non_exhaustive]` enum** with the HDMI 2.1 pattern values (1 = all ones, 2 = all zeros,
+  3 = Nyquist clock, 4 = DDE compliance, 5–8 = LFSR 0–3); `LtpPattern::new(u8)` is gone.
+  Match on the variants (`LtpPattern::Lfsr0` etc.).
+- **`PhyCall::SendLtp` carries the full per-lane pattern set** (`LanePatterns`), following
+  `hdmi-hal`'s new `HdmiPhy::send_ltp(patterns: LanePatterns)`. `None` on a lane means no
+  training pattern; `None` on every lane stops the training patterns.
+- **`hdmi-hal` updated to 0.5**: `StubPhy` implements hdmi-hal 0.5's `HdmiPhy` and
+  `I2cDevTransport` its `ScdcTransport`, the versions the reworked plumbob and culvert
+  use; a crate on hdmi-hal 0.4 (such as plumbob 0.1 or culvert 0.1) cannot use them.
+  0.1.0 depends on hdmi-hal 0.4.1, which was yanked, so a new project can no longer
+  resolve it: use this release.
+- **`MessagePhase` and `I2cTransactionError` are `#[non_exhaustive]`**, like the other
+  error types: a burst `read_block` may need another phase or more detail. Match
+  `MessagePhase` with a wildcard arm; `I2cTransactionError`'s fields are still readable,
+  but it can no longer be built outside this crate.
+
+### Added
+
+- `PhyCall` derives `Clone`, `Copy`, `PartialEq` and `Eq`, so tests can record the calls
+  and compare them as a whole.
+- `StubPhy` implements `hdmi-hal`'s new required `HdmiPhy::set_frl_output`, forwarding it
+  as the new `PhyCall::SetFrlOutput(FrlOutput)` event. `PhyCall` is `#[non_exhaustive]`,
+  so matches with a wildcard arm are unaffected.
+
+## [0.1.0] - 2026-05-27
+
 ### Added
 
 - `I2cDevTransport` — implements `ScdcTransport` over a `/dev/i2c-N` device node via
-  compound `I2C_RDWR` ioctl transactions to the SCDC slave address (0x54).
+  SMBus byte-data ioctls (`I2C_SMBUS`) to the SCDC slave address (0x54).
 - `StubPhy<F>` — implements `HdmiPhy` with a caller-supplied callback; forwards each PHY
   call as a `PhyCall` event and returns `Ok(())`. `type Error = Infallible`.
 - `PhyCall` — structured event type describing a single `HdmiPhy` method invocation;
