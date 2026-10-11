@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   use; a crate on hdmi-hal 0.4 (such as plumbob 0.1 or culvert 0.1) cannot use them.
   0.1.0 depends on hdmi-hal 0.4.1, which was yanked, so a new project can no longer
   resolve it: use this release.
+- **`MessagePhase` and `I2cTransactionError` are `#[non_exhaustive]`**, like the other
+  error types: a burst `read_block` may need another phase or more detail. Match
+  `MessagePhase` with a wildcard arm; `I2cTransactionError`'s fields are still readable,
+  but it can no longer be built outside this crate.
 
 ### Added
 
