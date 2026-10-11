@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`PhyCall::SendLtp` carries the full per-lane pattern set** (`LanePatterns`), following
   `hdmi-hal`'s new `HdmiPhy::send_ltp(patterns: LanePatterns)`. `None` on a lane means no
   training pattern; `None` on every lane stops the training patterns.
+- **`hdmi-hal` updated to 0.5**: `StubPhy` implements hdmi-hal 0.5's `HdmiPhy` and
+  `I2cDevTransport` its `ScdcTransport`, the versions the reworked plumbob and culvert
+  use; a crate on hdmi-hal 0.4 (such as plumbob 0.1 or culvert 0.1) cannot use them.
+  0.1.0 depends on hdmi-hal 0.4.1, which was yanked, so a new project can no longer
+  resolve it: use this release.
 
 ### Added
 
