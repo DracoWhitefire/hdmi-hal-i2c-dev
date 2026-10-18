@@ -21,9 +21,8 @@ operating through the DRM driver's `i2c_adapter`. See [`doc/architecture.md`] fo
 
 ## Usage
 
-```toml
-[dependencies]
-hdmi-hal-i2c-dev = "0.1"
+```sh
+cargo add hdmi-hal-i2c-dev
 ```
 
 ```rust,no_run
