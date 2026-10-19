@@ -7,8 +7,9 @@ description = "Linux userspace hdmi-hal backend via /dev/i2c-N (i2c-dev)"
 readme = "README.md"
 license = "MPL-2.0"
 repository = "https://github.com/DracoWhitefire/hdmi-hal-i2c-dev"
-keywords = ["hdmi", "i2c", "linux", "hal", "scdc"]
-categories = ["hardware-support", "embedded"]
+homepage = "https://ashlar-display.org"
+keywords = ["ashlar", "hdmi", "i2c", "linux", "scdc"]
+categories = ["hardware-support", "embedded", "os::linux-apis"]
 
 [package.metadata.docs.rs]
 all-features = true

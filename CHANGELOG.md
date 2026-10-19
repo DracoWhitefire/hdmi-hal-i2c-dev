@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Part of Ashlar** — the README now opens with a block naming the
+  [Ashlar](https://ashlar-display.org) stack and linking the other crates in it. Keywords
+  are aligned across the stack, with `ashlar` and `hdmi` on every crate; `ashlar` is added,
+  `hal` is dropped. Categories gain `os::linux-apis`. The crate's `homepage` is now the
+  Ashlar website.
+
 ## [0.2.0] - 2026-10-11
 
 ### Breaking changes
