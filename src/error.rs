@@ -33,6 +33,28 @@ pub enum I2cDevError {
     },
     /// An I²C transaction failed.
     Transaction(I2cTransactionError),
+    /// A block read asked for more bytes than one SMBus I2C block read can carry
+    /// ([`MAX_BLOCK_LEN`](crate::transport::MAX_BLOCK_LEN)).
+    /// Nothing was read: the read is never split into several transactions. A caller
+    /// that needs more reads it in parts, knowing they are separate transactions.
+    BlockReadTooLong {
+        /// The first register of the block.
+        register: u8,
+        /// The length asked for.
+        len: usize,
+        /// The most one block read can carry.
+        max: usize,
+    },
+    /// The kernel returned another number of bytes than the block read asked for. The
+    /// buffer is left unchanged rather than partly filled or padded.
+    UnexpectedBlockLength {
+        /// The first register of the block.
+        register: u8,
+        /// The length asked for.
+        requested: usize,
+        /// The length returned.
+        returned: usize,
+    },
 }
 
 /// The phase and kind of an I²C transaction failure.
@@ -113,6 +135,18 @@ impl std::fmt::Display for I2cDevError {
                 write!(f, "failed to open I²C device: {}", path.display())
             }
             Self::Transaction(e) => write!(f, "I²C transaction failed: {e}"),
+            Self::BlockReadTooLong { register, len, max } => write!(
+                f,
+                "block read of {len} bytes from register 0x{register:02x} exceeds the {max}-byte limit"
+            ),
+            Self::UnexpectedBlockLength {
+                register,
+                requested,
+                returned,
+            } => write!(
+                f,
+                "block read from register 0x{register:02x} returned {returned} bytes, not {requested}"
+            ),
         }
     }
 }

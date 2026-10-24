@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **hdmi-hal moves to the release where `ScdcTransport::read_block` is required.**
+  `I2cDevTransport` implements it (below); code that names hdmi-hal's types through this
+  crate needs the same hdmi-hal.
+
+### Added
+
+- **`I2cDevTransport::read_block`: one SMBus I2C block read** (`I2C_SMBUS_I2C_BLOCK_DATA`),
+  so a block of registers is one transaction: the register offset written, a repeated
+  START, the bytes read, in a single ioctl. Up to 32 bytes, **`transport::MAX_BLOCK_LEN`**;
+  a longer buffer is **`I2cDevError::BlockReadTooLong`**, before any ioctl, never split. An
+  empty buffer is `Ok` without an ioctl; a result of another length is
+  **`I2cDevError::UnexpectedBlockLength`**, never padded. There is no fallback to one
+  register at a time: an adapter without `I2C_FUNC_SMBUS_READ_I2C_BLOCK` returns the
+  ioctl's error. `i2c-stub` and the DRM DDC adapters (`i915`, `amdgpu`, through the
+  kernel's SMBus emulation) support it.
+- **Tier 2 tests for block reads** against `i2c-stub`: 9, 2 and 32 bytes, a 33-byte read
+  refused, and a block read to an unregistered address.
+
 ### Changed
 
 - **Part of Ashlar** — the README now opens with a block naming the
@@ -14,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are aligned across the stack, with `ashlar` and `hdmi` on every crate; `ashlar` is added,
   `hal` is dropped. Categories gain `os::linux-apis`. The crate's `homepage` is now the
   Ashlar website.
+
+### Fixed
+
+- **The NACK test instructions could not work**: they loaded "a second `i2c-stub`
+  instance", but `i2c-stub` registers one adapter, and a second `modprobe` of the loaded
+  module changes nothing, so the NACK tests were skipped. `doc/setup.md` and the test
+  file now run them in a second pass with the stub reloaded at another address, and say
+  that the stub reports a missing chip as `ENODEV` (`AdapterGone`), not `ENXIO`
+  (`AddressNack`).
+- **A skipped Tier 2 test said so**: one whose adapter variable is unset prints
+  `skipped: <variable> not set` (seen with `--nocapture`); before, it reported `ok` like
+  a test that ran.
 
 ## [0.2.0] - 2026-10-11
 

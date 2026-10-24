@@ -15,13 +15,19 @@ use crate::error::{I2cDevError, I2cErrorKind, I2cTransactionError, MessagePhase}
 /// SCDC slave address, fixed by the HDMI specification (HDMI 2.1 Table 10-3).
 const SCDC_ADDRESS: u16 = 0x54;
 
-/// A narrow seam over the two SMBus operations [`I2cDevTransport`] requires.
+/// The longest [`I2cDevTransport`] block read
+/// ([`read_block`](ScdcTransport::read_block)): 32 bytes, the SMBus block maximum
+/// (`I2C_SMBUS_BLOCK_MAX`). A longer read is refused, never split.
+pub const MAX_BLOCK_LEN: usize = 32;
+
+/// A narrow seam over the three SMBus operations [`I2cDevTransport`] requires.
 ///
 /// This trait is crate-private. It exists solely to allow a lightweight mock
 /// in unit tests without exposing the seam in the public API.
 pub(crate) trait SmbusDevice {
     fn smbus_read_byte_data(&mut self, reg: u8) -> Result<u8, LinuxI2CError>;
     fn smbus_write_byte_data(&mut self, reg: u8, value: u8) -> Result<(), LinuxI2CError>;
+    fn smbus_read_i2c_block_data(&mut self, reg: u8, len: u8) -> Result<Vec<u8>, LinuxI2CError>;
 }
 
 impl SmbusDevice for LinuxI2CDevice {
@@ -32,15 +38,31 @@ impl SmbusDevice for LinuxI2CDevice {
     fn smbus_write_byte_data(&mut self, reg: u8, value: u8) -> Result<(), LinuxI2CError> {
         I2CDevice::smbus_write_byte_data(self, reg, value)
     }
+
+    fn smbus_read_i2c_block_data(&mut self, reg: u8, len: u8) -> Result<Vec<u8>, LinuxI2CError> {
+        I2CDevice::smbus_read_i2c_block_data(self, reg, len)
+    }
 }
 
 /// An SCDC transport backed by a `/dev/i2c-N` device node.
 ///
-/// Implements [`ScdcTransport`] by issuing SMBus byte-data operations
-/// (`I2C_SMBUS`) to the SCDC slave address (0x54) on the specified adapter.
-/// SMBus byte-data read is a combined write-then-read in a single ioctl,
-/// semantically equivalent to a raw I²C combined transaction for SCDC's
-/// single-byte register model.
+/// Implements [`ScdcTransport`] by issuing SMBus operations (`I2C_SMBUS`) to the
+/// SCDC slave address (0x54) on the specified adapter: byte-data reads and writes,
+/// and I²C block reads for [`read_block`](ScdcTransport::read_block). Each read is a
+/// combined write-then-read in a single ioctl — the register offset written, a
+/// repeated START, the bytes read — the transaction an SCDC read is on the wire.
+///
+/// # Block reads
+///
+/// `read_block` is one SMBus I2C block read (`I2C_SMBUS_I2C_BLOCK_DATA`), so a whole
+/// block is one transaction. Its limit is [`MAX_BLOCK_LEN`], 32
+/// bytes (`I2C_SMBUS_BLOCK_MAX`): a longer buffer is
+/// [`I2cDevError::BlockReadTooLong`], before any ioctl, never split. An adapter
+/// without `I2C_FUNC_SMBUS_READ_I2C_BLOCK` fails the ioctl, and that error is
+/// returned; there is no fallback to one register at a time. Adapters with native
+/// I²C transfers (the DRM DDC adapters of `amdgpu` and `i915`, for example) offer it
+/// through the kernel's SMBus emulation, which issues it as the offset write and a
+/// repeated-START read.
 ///
 /// # Error recovery
 ///
@@ -136,6 +158,54 @@ impl<D: SmbusDevice> ScdcTransport for I2cDevTransport<D> {
                 kind: map_errno(to_raw_errno(e)),
             })
         })
+    }
+
+    /// Read `buf.len()` consecutive registers, starting at `reg`, in one transaction.
+    ///
+    /// Issues an SMBus I2C block read (`I2C_SMBUS`, `I2C_SMBUS_I2C_BLOCK_DATA`): the
+    /// register offset written, a repeated START, then `buf.len()` bytes read, in a
+    /// single ioctl. The kernel holds the bus for the duration.
+    ///
+    /// - An empty `buf` is `Ok` without an ioctl.
+    /// - A `buf` longer than [`MAX_BLOCK_LEN`] is
+    ///   [`I2cDevError::BlockReadTooLong`], without an ioctl: the read is never split.
+    /// - A result of another length than requested is
+    ///   [`I2cDevError::UnexpectedBlockLength`], never padded.
+    /// - A failed ioctl is [`I2cDevError::Transaction`], mapped as for `read`; on any
+    ///   error, `buf` is unchanged.
+    fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), I2cDevError> {
+        if buf.is_empty() {
+            return Ok(());
+        }
+        if buf.len() > MAX_BLOCK_LEN {
+            return Err(I2cDevError::BlockReadTooLong {
+                register: reg,
+                len: buf.len(),
+                max: MAX_BLOCK_LEN,
+            });
+        }
+        let mut device = self
+            .device
+            .lock()
+            .expect("I2cDevTransport device mutex was poisoned");
+        // `buf.len()` is at most 32 here, so it fits the `u8` the ioctl takes.
+        let bytes = device
+            .smbus_read_i2c_block_data(reg, buf.len() as u8)
+            .map_err(|e| {
+                I2cDevError::Transaction(I2cTransactionError {
+                    phase: MessagePhase::Write { register: reg },
+                    kind: map_errno(to_raw_errno(e)),
+                })
+            })?;
+        if bytes.len() != buf.len() {
+            return Err(I2cDevError::UnexpectedBlockLength {
+                register: reg,
+                requested: buf.len(),
+                returned: bytes.len(),
+            });
+        }
+        buf.copy_from_slice(&bytes);
+        Ok(())
     }
 }
 
