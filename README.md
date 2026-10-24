@@ -52,6 +52,17 @@ let phy = StubPhy::new(|call| eprintln!("{call:?}"));
 # Ok::<(), hdmi_hal_i2c_dev::I2cDevError>(())
 ```
 
+## Block reads
+
+`I2cDevTransport::read_block` is one SMBus I2C block read (one ioctl), up to 32 bytes
+(`transport::MAX_BLOCK_LEN`; a longer read is refused, not split). The adapter must support
+the SMBus I2C block read: the DRM DDC adapters of `i915` and `amdgpu` do, and on one without
+it a block read fails with `I2cErrorKind::Unsupported`; for such an adapter,
+`I2cDevTransport::open_bytewise` reads a block one register at a time instead, which is not
+one transaction. One ioctl is not always one transaction on the wire: that is the adapter
+driver's, and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte by byte. See
+[`doc/architecture.md`] for the adapters checked.
+
 ## Privileges
 
 The calling process needs read/write permission on the `/dev/i2c-N` device node — typically via

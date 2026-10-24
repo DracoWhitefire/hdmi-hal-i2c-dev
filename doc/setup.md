@@ -66,6 +66,14 @@ A test whose adapter variable is not set is skipped, not failed, and prints
 `skipped: <variable> not set`. `cargo test` hides the output of passing tests, so run with
 `--nocapture` to see which tests were skipped: a skipped test still reports `ok`.
 
+In CI and for a release, set `I2C_STUB_REQUIRED=1`: a test whose adapter variable is unset
+then fails instead of skipping, so a forgotten variable cannot pass for tier 2 coverage.
+Each pass then runs only its own tests:
+
+```sh
+I2C_STUB_REQUIRED=1 I2C_STUB_ADAPTER=N cargo test --locked --features integration -- --skip slave_not_registered
+```
+
 ### NACK tests (a second pass)
 
 The two NACK tests need an adapter where nothing answers at 0x54, so that a read gets no
@@ -81,8 +89,9 @@ sudo chmod 0666 /dev/i2c-M
 I2C_STUB_ADAPTER_NACK=M cargo test --locked --features integration slave_not_registered -- --nocapture
 ```
 
-With `I2C_STUB_ADAPTER` unset, the other tests skip and only the NACK tests run; the byte
-read's prints the error it got. Against `i2c-stub` the kind is `AdapterGone`: for an
+(In CI and for a release, with `I2C_STUB_REQUIRED=1` too.) The test name filter runs only
+the two NACK tests. The byte-read one prints the error it got. Against `i2c-stub` the kind
+is `AdapterGone`: for an
 address with no chip the stub returns `ENODEV` (`i2c-stub.c`, `if (!chip) return
 -ENODEV;`), where a real adapter returns `ENXIO`, which the crate maps to `AddressNack`
 (`EIO`, `Unknown`, on `amdgpu`). The tests check only that the error is a `Transaction`

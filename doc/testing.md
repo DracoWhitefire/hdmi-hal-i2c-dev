@@ -53,8 +53,15 @@ records every block read it is asked for, so a test can count ioctls.
 - A 33-byte buffer: `BlockReadTooLong`, no ioctl, the buffer unchanged
 - A result of another length than requested: `UnexpectedBlockLength`, the buffer unchanged
   (not padded)
-- An ioctl error: `Transaction`, with the kind mapped as for `read` and the phase
-  `Write { register }`
+- A 32-byte read from 0xF0: `UnexpectedBlockLength` with 16 returned, as on `i2c-stub`,
+  which ends a block read at 0xFF (the mock does the same rather than wrapping)
+- `EOPNOTSUPP` (no SMBus I2C block read): `Transaction` with `Unsupported`, and no byte
+  reads after it
+- An ioctl error: `Transaction`, with the kind mapped as for `read` (the phase is not
+  checked: one ioctl does not say which message failed, and the crate reports `Write`)
+- Opened bytewise (`open_bytewise`): one byte-data read per register and no block read,
+  no length limit, wrapping past 0xFF, and stopping at the first error with the bytes
+  before it in the buffer
 - `Display` of both new errors, and no `source` for either (in `src/error_tests.rs`)
 
 ### `StubPhy` (in `src/phy_tests.rs`)
@@ -92,6 +99,9 @@ through the kernel produces correct results.
   and the 32-byte maximum, each written first; `i2c-stub` supports the SMBus I2C block read
   by default (`I2C_FUNC_SMBUS_I2C_BLOCK`)
 - A 33-byte block read is refused (`BlockReadTooLong`)
+- A 32-byte block read from 0xF0 is `UnexpectedBlockLength` with 16 bytes returned:
+  `i2c-stub` returns at most `256 - command` bytes
+- A transport opened with `open_bytewise` reads a block a register at a time
 - A transaction to an unregistered address, a byte read or a block read, produces a
   `Transaction` error (the kind is `AdapterGone` on `i2c-stub`, which returns `ENODEV` for
   an address with no chip; `AddressNack` on a compliant adapter, which returns `ENXIO`;
@@ -99,10 +109,12 @@ through the kernel produces correct results.
   0x54, so they run in a second pass ([`setup.md`](setup.md), "NACK tests")
 
 A test whose adapter variable is unset is skipped and prints `skipped: <variable> not set`;
-run with `--nocapture` to see skips, as a skipped test still reports `ok`.
+run with `--nocapture` to see skips, as a skipped test still reports `ok`. With
+`I2C_STUB_REQUIRED=1`, as in CI and for a release, an unset variable fails the test
+instead ([`setup.md`](setup.md), "Step 3").
 
 The block-read tests each use registers no other test writes (0x50–0x58, 0x60–0x61,
-0xA0–0xBF), as all tests share one stub.
+0xA0–0xBF, 0xD0–0xD3, 0xF0–0xFF), as all tests share one stub.
 
 **Intentionally not covered:**
 - Bus errors, clock stretch timeouts, and arbitration loss — `i2c-stub` always ACKs

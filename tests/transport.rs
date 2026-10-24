@@ -33,7 +33,14 @@
 //!
 //! A test whose adapter variable is unset is skipped, not failed, and prints
 //! `skipped: <variable> not set`; `--nocapture` shows it (a skipped test still reports
-//! `ok`).
+//! `ok`). With `I2C_STUB_REQUIRED=1` a skip fails instead: set it in CI and for the release
+//! run, so that a forgotten adapter variable cannot pass for tier 2 coverage, and run each
+//! pass with only its own tests (`--skip slave_not_registered` in the first,
+//! `slave_not_registered` in the second):
+//!
+//! ```sh
+//! I2C_STUB_REQUIRED=1 I2C_STUB_ADAPTER=N cargo test --locked --features integration -- --skip slave_not_registered
+//! ```
 //!
 //! # NACK test setup
 //!
@@ -49,6 +56,8 @@
 //! I2C_STUB_ADAPTER_NACK=M cargo test --locked --features integration slave_not_registered -- --nocapture
 //! ```
 //!
+//! (with `I2C_STUB_REQUIRED=1` too, in CI and for the release run).
+//!
 //! Against `i2c-stub` the error's kind is `AdapterGone`: the stub returns `ENODEV` for an
 //! address with no chip, where a real adapter returns `ENXIO` (`AddressNack`).
 //!
@@ -62,6 +71,9 @@
 //!   registers in one ioctl, for 9 bytes (the CED block), 2 bytes and the 32-byte
 //!   maximum; `i2c-stub` supports it by default (`I2C_FUNC_SMBUS_I2C_BLOCK`)
 //! - A block read longer than 32 bytes refused before any ioctl
+//! - A block read past 0xFF: `i2c-stub` ends it at 0xFF, so a 32-byte read from 0xF0 is
+//!   `UnexpectedBlockLength` (16 bytes returned)
+//! - A transport opened with `open_bytewise` reading a block a register at a time
 //! - Slave address 0x54 is bound at device-open time
 //! - Read/write round-trip correctness against the stub register map
 //! - A `Transaction` error when the slave address is not registered, for a byte read and
@@ -86,9 +98,14 @@ use hdmi_hal_i2c_dev::transport::{self, I2cDevTransport};
 ///
 /// Tests that call this and get `None` return early — they are skipped rather
 /// than failed so that the suite can be run with partial hardware available. A skip
-/// prints a notice (visible with `--nocapture`), so it cannot pass for a run.
+/// prints a notice (visible with `--nocapture`). With `I2C_STUB_REQUIRED=1`, an unset
+/// variable fails the test instead, so a run that should have tier 2 coverage cannot pass
+/// without it.
 fn adapter_path(var: &str) -> Option<PathBuf> {
     let Ok(n) = std::env::var(var) else {
+        if std::env::var("I2C_STUB_REQUIRED").is_ok_and(|v| v == "1") {
+            panic!("{var} not set, and I2C_STUB_REQUIRED=1: this test must run");
+        }
         eprintln!("skipped: {var} not set");
         return None;
     };
@@ -99,6 +116,14 @@ fn open_transport(var: &str) -> Option<I2cDevTransport> {
     let path = adapter_path(var)?;
     Some(
         I2cDevTransport::open(&path)
+            .unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display())),
+    )
+}
+
+fn open_transport_bytewise(var: &str) -> Option<I2cDevTransport> {
+    let path = adapter_path(var)?;
+    Some(
+        I2cDevTransport::open_bytewise(&path)
             .unwrap_or_else(|e| panic!("failed to open {}: {e}", path.display())),
     )
 }
@@ -217,6 +242,49 @@ fn block_read_longer_than_the_maximum_is_refused() {
         ),
         "got: {err:?}"
     );
+}
+
+#[test]
+fn block_read_past_0xff_ends_at_0xff_on_i2c_stub() {
+    // `i2c-stub` returns at most `256 - command` bytes for an I2C block read, so a 32-byte
+    // read from 0xF0 returns 16: the one end-to-end way to an `UnexpectedBlockLength`.
+    let Some(transport) = open_transport("I2C_STUB_ADAPTER") else {
+        return;
+    };
+    let mut buf = [0xAAu8; 32];
+    let err = transport
+        .read_block(0xF0, &mut buf)
+        .expect_err("a block read past 0xFF should come back short on i2c-stub");
+    assert!(
+        matches!(
+            err,
+            I2cDevError::UnexpectedBlockLength {
+                register: 0xF0,
+                requested: 32,
+                returned: 16,
+                ..
+            }
+        ),
+        "got: {err:?}"
+    );
+    assert_eq!(buf, [0xAAu8; 32], "the buffer should be left unchanged");
+}
+
+#[test]
+fn bytewise_block_read_returns_consecutive_registers() {
+    // `open_bytewise`: one byte-data read per register, for adapters without the block read.
+    let Some(mut transport) = open_transport_bytewise("I2C_STUB_ADAPTER") else {
+        return;
+    };
+    let values = [0x12, 0x34, 0x56, 0x78];
+    for (reg, value) in (0xD0..).zip(values) {
+        transport.write(reg, value).expect("write failed");
+    }
+    let mut buf = [0u8; 4];
+    transport
+        .read_block(0xD0, &mut buf)
+        .expect("bytewise block read failed");
+    assert_eq!(buf, values);
 }
 
 // --- NACK (unregistered address) --------------------------------------------

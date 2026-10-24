@@ -37,6 +37,7 @@ pub enum I2cDevError {
     /// ([`MAX_BLOCK_LEN`](crate::transport::MAX_BLOCK_LEN)).
     /// Nothing was read: the read is never split into several transactions. A caller
     /// that needs more reads it in parts, knowing they are separate transactions.
+    #[non_exhaustive]
     BlockReadTooLong {
         /// The first register of the block.
         register: u8,
@@ -47,6 +48,14 @@ pub enum I2cDevError {
     },
     /// The kernel returned another number of bytes than the block read asked for. The
     /// buffer is left unchanged rather than partly filled or padded.
+    ///
+    /// The kernel's SMBus emulation returns the length asked for, so this is rare: it
+    /// comes from an adapter driver that reports another length, or from `i2c-stub`,
+    /// which ends a block read at register 0xFF (a 32-byte read from 0xF0 returns 16
+    /// bytes). A driver that reports more than 33 bytes does not reach this error:
+    /// `i2cdev` panics on it, while the transport's lock is held, and every later call on
+    /// the transport then panics too; open a new one.
+    #[non_exhaustive]
     UnexpectedBlockLength {
         /// The first register of the block.
         register: u8,
@@ -61,13 +70,20 @@ pub enum I2cDevError {
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct I2cTransactionError {
-    /// Which message in the compound transaction failed.
+    /// Which message in the compound transaction failed, as far as this crate can tell:
+    /// always [`MessagePhase::Write`] here (see [`MessagePhase`]).
     pub phase: MessagePhase,
     /// The class of bus condition that caused the failure.
     pub kind: I2cErrorKind,
 }
 
 /// Which message in the compound SCDC transaction failed.
+///
+/// [`I2cDevTransport`](crate::I2cDevTransport) always reports `Write`, for reads and block
+/// reads too: each operation is one `I2C_SMBUS` ioctl, and its error does not say which
+/// message of the transaction failed. Treat the phase as unknown here; `register` is the
+/// register the operation started at. `Read` is for a backend that can tell, such as one
+/// issuing `I2C_RDWR` messages and isolating the failing one.
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum MessagePhase {
@@ -104,7 +120,17 @@ pub enum I2cErrorKind {
     /// An unexpected START or STOP condition was observed on the bus (`EPROTO`).
     BusProtocolError,
     /// The I²C adapter was suspended or removed (`ESHUTDOWN`/`ENODEV`).
+    ///
+    /// `ENODEV` is not always that: `Documentation/i2c/fault-codes.rst` also gives it for a
+    /// device that is not there at all, and `i2c-stub` returns it for an address with no
+    /// chip, where a real adapter returns `ENXIO` ([`AddressNack`](Self::AddressNack)).
     AdapterGone,
+    /// The adapter does not support the operation (`EOPNOTSUPP`). For a block read, the
+    /// adapter most likely lacks the SMBus I2C block read (`I2C_FUNC_SMBUS_READ_I2C_BLOCK`),
+    /// as an SMBus-only adapter may; open the transport with
+    /// [`I2cDevTransport::open_bytewise`](crate::I2cDevTransport::open_bytewise) to read a
+    /// register at a time instead.
+    Unsupported,
     /// An errno that does not map to any known I²C condition.
     Unknown {
         /// The raw OS error number.
