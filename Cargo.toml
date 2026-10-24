@@ -19,15 +19,9 @@ integration = []
 
 [dependencies]
 display-types = "0.4"
-hdmi-hal = "0.5"
+hdmi-hal = "0.6"
 i2cdev = "0.6.2"
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
-
-# Temporary, until hdmi-hal with the required `read_block` and display-types 0.4.3 are
-# published: replaces them for the whole graph. Remove before merging.
-[patch.crates-io]
-hdmi-hal = { path = "../hdmi-hal" }
-display-types = { path = "../display-types" }
