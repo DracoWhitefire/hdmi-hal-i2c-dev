@@ -7,13 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **hdmi-hal moves to the release where `ScdcTransport::read_block` is required (0.6).**
+  `I2cDevTransport` implements it (below); code that names hdmi-hal's types through this
+  crate needs the same hdmi-hal.
+- **Block reads need the SMBus I2C block read.** `read_block` was one `read` per register
+  (hdmi-hal's old default); it is now one SMBus I2C block read, with no fallback. On an
+  adapter without `I2C_FUNC_SMBUS_READ_I2C_BLOCK` (some SMBus-only adapters), block reads,
+  and so culvert's `read_ltp_requests` and link training's LTS:3, now fail where byte reads
+  worked: the error is `I2cErrorKind::Unsupported`, at the first block read rather than at
+  open. Open such an adapter with `I2cDevTransport::open_bytewise` to keep reading a
+  register at a time.
+- **`EOPNOTSUPP` is `I2cErrorKind::Unsupported`**, no longer `Unknown { errno: 95 }`.
+
+### Added
+
+- **`I2cDevTransport::read_block`: one SMBus I2C block read** (`I2C_SMBUS_I2C_BLOCK_DATA`):
+  one ioctl, the register offset written, a repeated START, the bytes read. One ioctl is
+  one transaction on the wire where the adapter driver makes it one: the DRM DDC adapters
+  of `i915` (GMBUS) and `amdgpu` (DC) do, through the kernel's SMBus emulation; the
+  Synopsys DesignWare HDMI controller's I²C master (`dw-hdmi`, `dw-hdmi-qp`) reads one byte
+  per hardware operation. Up to 32 bytes, **`transport::MAX_BLOCK_LEN`**; a longer buffer
+  is **`I2cDevError::BlockReadTooLong`**, before any ioctl, never split. An empty buffer is
+  `Ok` without an ioctl; a result of another length is
+  **`I2cDevError::UnexpectedBlockLength`**, never padded (on `i2c-stub`, a read past 0xFF).
+  Both errors are `#[non_exhaustive]` per variant.
+- **`I2cDevTransport::open_bytewise`**: a transport whose `read_block` is one byte-data
+  read per register (`read_block_bytewise`), for an adapter without the SMBus I2C block
+  read. Not one transaction; documented as such.
+- **`I2cErrorKind::Unsupported`** (`EOPNOTSUPP`).
+- **Tier 2 tests for block reads** against `i2c-stub`: 9, 2 and 32 bytes, a 33-byte read
+  refused, a read from 0xF0 ending at 0xFF, a bytewise block read, and a block read to an
+  unregistered address.
+- **`I2C_STUB_REQUIRED=1`** makes a tier 2 test whose adapter variable is unset fail
+  instead of skipping, for CI and the release run.
+
 ### Changed
+
+- **Documented what the error details can and cannot say.** `MessagePhase` is always
+  `Write` from this crate, for reads too: one ioctl does not say which message failed.
+  `AdapterGone` notes that `ENODEV` can also mean no device at all (as `i2c-stub` reports
+  a missing chip). `UnexpectedBlockLength` says when it occurs, and that a driver reporting
+  more than 33 bytes panics inside `i2cdev` instead, poisoning the transport.
 
 - **Part of Ashlar** — the README now opens with a block naming the
   [Ashlar](https://ashlar-display.org) stack and linking the other crates in it. Keywords
   are aligned across the stack, with `ashlar` and `hdmi` on every crate; `ashlar` is added,
   `hal` is dropped. Categories gain `os::linux-apis`. The crate's `homepage` is now the
   Ashlar website.
+
+### Fixed
+
+- **The NACK test instructions could not work**: they loaded "a second `i2c-stub`
+  instance", but `i2c-stub` registers one adapter, and a second `modprobe` of the loaded
+  module changes nothing, so the NACK tests were skipped. `doc/setup.md` and the test
+  file now run them in a second pass with the stub reloaded at another address, and say
+  that the stub reports a missing chip as `ENODEV` (`AdapterGone`), not `ENXIO`
+  (`AddressNack`).
+- **Skipped Tier 2 tests were silent**: a test whose adapter variable was unset reported
+  `ok` like a test that ran. It now prints `skipped: <variable> not set` (seen with
+  `--nocapture`), and fails instead with `I2C_STUB_REQUIRED=1`.
 
 ## [0.2.0] - 2026-10-11
 

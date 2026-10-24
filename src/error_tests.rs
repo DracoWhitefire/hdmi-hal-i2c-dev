@@ -87,6 +87,48 @@ fn source_connector_not_found_is_none() {
     assert!(e.source().is_none());
 }
 
+#[test]
+fn display_block_read_too_long() {
+    let e = I2cDevError::BlockReadTooLong {
+        register: 0x00,
+        len: 256,
+        max: 32,
+    };
+    assert_eq!(
+        e.to_string(),
+        "block read of 256 bytes from register 0x00 exceeds the 32-byte limit"
+    );
+}
+
+#[test]
+fn display_unexpected_block_length() {
+    let e = I2cDevError::UnexpectedBlockLength {
+        register: 0x50,
+        requested: 9,
+        returned: 8,
+    };
+    assert_eq!(
+        e.to_string(),
+        "block read from register 0x50 returned 8 bytes, not 9"
+    );
+}
+
+#[test]
+fn source_block_read_errors_are_none() {
+    let too_long = I2cDevError::BlockReadTooLong {
+        register: 0,
+        len: 33,
+        max: 32,
+    };
+    let unexpected = I2cDevError::UnexpectedBlockLength {
+        register: 0,
+        requested: 2,
+        returned: 1,
+    };
+    assert!(too_long.source().is_none());
+    assert!(unexpected.source().is_none());
+}
+
 // --- I2cTransactionError::Display -------------------------------------------
 
 #[test]
