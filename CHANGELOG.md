@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
 ### Breaking changes
 
 - **hdmi-hal moves to the release where `ScdcTransport::read_block` is required (0.6).**
