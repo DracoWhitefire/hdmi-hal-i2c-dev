@@ -1,12 +1,24 @@
 # hdmi-hal-i2c-dev
 
-[![CI](https://github.com/DracoWhitefire/hdmi-hal-i2c-dev/actions/workflows/ci.yml/badge.svg)](https://github.com/DracoWhitefire/hdmi-hal-i2c-dev/actions/workflows/ci.yml)
+[![CI](https://github.com/ashlar-display/hdmi-hal-i2c-dev/actions/workflows/ci.yml/badge.svg)](https://github.com/ashlar-display/hdmi-hal-i2c-dev/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/hdmi-hal-i2c-dev.svg)](https://crates.io/crates/hdmi-hal-i2c-dev)
 [![docs.rs](https://docs.rs/hdmi-hal-i2c-dev/badge.svg)](https://docs.rs/hdmi-hal-i2c-dev)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rustc-1.85+-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
 [![SLSA Level 2](https://slsa.dev/images/gh-badge-level2.svg)](https://slsa.dev)
 [![trusted publishing only](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcrates.io%2Fapi%2Fv1%2Fcrates%2Fhdmi-hal-i2c-dev&query=%24.crate.trustpub_only&label=trusted%20publishing%20only)](#verifying-releases)
+
+> **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
+> HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
+>
+> [display-types](https://github.com/DracoWhitefire/display-types) ·
+> [piaf](https://github.com/DracoWhitefire/piaf) ·
+> [concordance](https://github.com/DracoWhitefire/concordance) ·
+> [cartouche](https://github.com/DracoWhitefire/cartouche) ·
+> [culvert](https://github.com/DracoWhitefire/culvert) ·
+> [plumbob](https://github.com/DracoWhitefire/plumbob) ·
+> [hdmi-hal](https://github.com/DracoWhitefire/hdmi-hal) ·
+> **hdmi-hal-i2c-dev**
 
 Linux userspace [`hdmi-hal`] backend backed by `/dev/i2c-N` via the `i2c-dev` kernel interface.
 
@@ -21,9 +33,8 @@ operating through the DRM driver's `i2c_adapter`. See [`doc/architecture.md`] fo
 
 ## Usage
 
-```toml
-[dependencies]
-hdmi-hal-i2c-dev = "0.1"
+```sh
+cargo add hdmi-hal-i2c-dev
 ```
 
 ```rust,no_run
@@ -40,6 +51,17 @@ let phy = StubPhy::new(|call| eprintln!("{call:?}"));
 // Pass transport and phy to culvert / plumbob as you would any other backend.
 # Ok::<(), hdmi_hal_i2c_dev::I2cDevError>(())
 ```
+
+## Block reads
+
+`I2cDevTransport::read_block` is one SMBus I2C block read (one ioctl), up to 32 bytes
+(`transport::MAX_BLOCK_LEN`; a longer read is refused, not split). The adapter must support
+the SMBus I2C block read: the DRM DDC adapters of `i915` and `amdgpu` do, and on one without
+it a block read fails with `I2cErrorKind::Unsupported`; for such an adapter,
+`I2cDevTransport::open_bytewise` reads a block one register at a time instead, which is not
+one transaction. One ioctl is not always one transaction on the wire: that is the adapter
+driver's, and the Synopsys DesignWare HDMI controller's (`dw-hdmi`) reads byte by byte. See
+[`doc/architecture.md`] for the adapters checked.
 
 ## Privileges
 
@@ -68,11 +90,19 @@ Releases are built on GitHub Actions and attested with
 [GitHub CLI](https://cli.github.com/) and run:
 
 ```sh
-gh attestation verify hdmi-hal-i2c-dev-X.Y.Z.crate --repo DracoWhitefire/hdmi-hal-i2c-dev
+gh attestation verify hdmi-hal-i2c-dev-X.Y.Z.crate --repo ashlar-display/hdmi-hal-i2c-dev
+```
+
+The release from before the repository moved to the `ashlar-display` organization (0.2.0)
+was attested under its previous owner, and verifies against it:
+
+```sh
+gh attestation verify hdmi-hal-i2c-dev-0.2.0.crate --owner DracoWhitefire \
+  --signer-repo DracoWhitefire/hdmi-hal-i2c-dev
 ```
 
 The attested `.crate` is attached to each
-[GitHub release](https://github.com/DracoWhitefire/hdmi-hal-i2c-dev/releases).
+[GitHub release](https://github.com/ashlar-display/hdmi-hal-i2c-dev/releases).
 
 Releases from 0.2.0 are uploaded through crates.io
 [trusted publishing](https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html): the publish

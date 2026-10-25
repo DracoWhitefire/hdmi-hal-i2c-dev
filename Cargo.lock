@@ -34,9 +34,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "display-types"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d55798f52f556c3d0a8345ac33d44420bcadea3a2b93154248458f384fdddd78"
+checksum = "6b7b3c2dedb89bb093a6022e7bf2eb2e3d9f626f407212a487b74aacf8b9e584"
 dependencies = [
  "bitflags 2.11.1",
 ]
@@ -99,16 +99,16 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hdmi-hal"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8885af365aabcb60f7b15e138207c089d918c8c41708e38d9cd2f51344d141a"
+checksum = "33358dac26d307b3111dec4109fb11f3be6470d688f686e5979879822a76c0bf"
 dependencies = [
  "display-types",
 ]
 
 [[package]]
 name = "hdmi-hal-i2c-dev"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "display-types",
  "hdmi-hal",
@@ -167,9 +167,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-raw-sys"

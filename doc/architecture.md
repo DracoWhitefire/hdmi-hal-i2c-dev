@@ -168,14 +168,58 @@ The SCDC register protocol is:
 - **Read:** `smbus_read_byte_data(reg)` — an `I2C_SMBUS` ioctl issuing a combined
   write-then-read: the register address byte is written, then one byte is read back, all
   within a single ioctl call.
+- **Block read** (`read_block`): `smbus_read_i2c_block_data(reg, len)` — an `I2C_SMBUS`
+  ioctl with `I2C_SMBUS_I2C_BLOCK_DATA`: the register address byte is written, then, after
+  a repeated START, `len` bytes are read, all within a single ioctl call. At most 32 bytes
+  (`I2C_SMBUS_BLOCK_MAX`, exported as `transport::MAX_BLOCK_LEN`); a longer buffer is
+  `I2cDevError::BlockReadTooLong` before any ioctl, never split into several reads. An
+  empty buffer is `Ok` without an ioctl; a result of another length is
+  `I2cDevError::UnexpectedBlockLength`, never padded. Past 0xFF the result is the sink's on
+  real hardware; `i2c-stub` ends the read at 0xFF (`UnexpectedBlockLength`).
+- **Block read, opened with `open_bytewise`**: `read_block_bytewise`, one byte-data read
+  per register, for an adapter without the SMBus I2C block read. Not one transaction, no
+  length limit, wrapping past 0xFF.
 
-Both operations are issued via `LinuxI2CDevice` from `i2cdev`. The kernel holds the bus for
-the duration of the ioctl, making reads atomic. This is important for CED counters, which
-may increment between an address write and a data read if the two were issued as separate
-ioctl calls.
+The operations are issued via `LinuxI2CDevice` from `i2cdev`, each as one ioctl. The kernel
+holds the adapter for the duration of the ioctl, so another process's transfer cannot land
+inside it. What reaches the wire is the adapter driver's: this crate controls the ioctl, not
+the bus. For the DRM DDC adapters checked (`i915`'s GMBUS and `amdgpu`'s DC, the latter on
+hardware too) a block read is one transaction on the wire, the offset write and a
+repeated-START read; the Synopsys DesignWare HDMI controller's I²C master (`dw-hdmi`,
+`dw-hdmi-qp`) reads one byte per hardware operation, each with its own offset write, while
+advertising `I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL` (`dw_hdmi_i2c_read`), so there a block
+read returns `Ok` with its registers read one at a time. Other adapters are unchecked.
+That matters for registers read together, such as the CED counters, which may increment
+between two reads: culvert's CED checksum is the one protection that holds on every
+adapter.
 
 SMBus byte-data semantics are equivalent to raw I²C for SCDC's single-byte register model,
 and work on both `i2c-stub` (for integration tests) and real DDC adapters.
+
+**Why the block read is an SMBus I2C block read.** `hdmi-hal`'s `read_block` contract asks
+for one combined transfer to the layer below, or an error. Two ioctls give one: `I2C_RDWR` with a write message and a
+read message, or the SMBus I2C block read. Both put the same transaction on the wire — the
+offset written, a repeated START, the bytes read — which is what the kernel's own
+`drm_scdc_read` and embedded `I2c::write_read` backends issue. `I2C_RDWR` has no 32-byte
+limit, but needs `I2C_FUNC_I2C`, which `i2c-stub` does not offer: the Tier 2 tests could
+not run it, and on an adapter without it `read_ltp_requests`, polled in LTS:3, would fail
+where byte reads work today. The SMBus I2C block read is in `i2c-stub`'s default
+functionality and in `I2C_FUNC_SMBUS_EMUL`, which the DRM DDC adapters advertise (`i915`'s
+GMBUS and `amdgpu`'s DC: `I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL`); on them the kernel
+emulates it as the offset write and a repeated-START read. Its 32-byte limit is what
+`read_block`'s contract allows a backend to document; culvert's block reads are 2 and 9
+bytes, and a register dump reads the map in parts. There is no fallback to one register at
+a time: an adapter that cannot do the block read returns the ioctl's error, typically
+`EOPNOTSUPP`, which is `I2cErrorKind::Unsupported`.
+
+The trade-off is accepted, not avoided: `I2C_RDWR` would fail on adapters without
+`I2C_FUNC_I2C`, and the SMBus I2C block read fails on SMBus-only adapters without
+`I2C_FUNC_SMBUS_READ_I2C_BLOCK`, where byte reads worked before; on those, LTS:3 now fails.
+The error surfaces at the first block read, not at open: an up-front check needs the
+`I2C_FUNCS` ioctl, which `i2cdev` 0.6.2 does not expose, and `#![forbid(unsafe_code)]` rules
+out issuing it here (a functionality check at open is planned once `i2cdev` offers one). For
+such an adapter, `I2cDevTransport::open_bytewise` reads a block a register at a time, as an
+explicit choice.
 
 ```rust
 pub struct I2cDevTransport { /* LinuxI2CDevice in Mutex */ }
@@ -183,6 +227,8 @@ pub struct I2cDevTransport { /* LinuxI2CDevice in Mutex */ }
 impl I2cDevTransport {
     /// Open the given `/dev/i2c-N` device for use as an SCDC transport.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
+    /// The same, with `read_block` one register at a time (not one transaction).
+    pub fn open_bytewise(path: impl AsRef<Path>) -> Result<Self, I2cDevError>;
 }
 
 impl ScdcTransport for I2cDevTransport {
@@ -190,7 +236,11 @@ impl ScdcTransport for I2cDevTransport {
 
     fn read(&self, reg: u8) -> Result<u8, I2cDevError>;
     fn write(&mut self, reg: u8, value: u8) -> Result<(), I2cDevError>;
+    fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), I2cDevError>;  // ≤ 32 bytes (`open`)
 }
+
+/// The longest block read.
+pub const MAX_BLOCK_LEN: usize = 32;
 ```
 
 **Error recovery policy.** A `Transaction` error does not invalidate the transport. The
@@ -290,6 +340,13 @@ pub enum I2cDevError {
     DeviceOpenFailed { path: PathBuf, source: io::Error },
     /// An I²C transaction failed.
     Transaction(I2cTransactionError),
+    /// A block read longer than `MAX_BLOCK_LEN`; nothing was read.
+    #[non_exhaustive]
+    BlockReadTooLong { register: u8, len: usize, max: usize },
+    /// The kernel returned another number of bytes than the block read asked for: an
+    /// adapter driver reporting another length, or `i2c-stub` ending a read at 0xFF.
+    #[non_exhaustive]
+    UnexpectedBlockLength { register: u8, requested: usize, returned: usize },
 }
 
 /// The phase and kind of an I²C transaction failure.
@@ -330,12 +387,22 @@ pub enum I2cErrorKind {
     BusBusy,
     /// An unexpected START or STOP condition was observed on the bus (`EPROTO`).
     BusProtocolError,
-    /// The I²C adapter was suspended or removed (`ESHUTDOWN`/`ENODEV`).
+    /// The I²C adapter was suspended or removed (`ESHUTDOWN`/`ENODEV`). `ENODEV` can also
+    /// mean no device at all: `i2c-stub` returns it for an address with no chip.
     AdapterGone,
+    /// The adapter does not support the operation (`EOPNOTSUPP`): for a block read, no
+    /// SMBus I2C block read; use `open_bytewise`.
+    Unsupported,
     /// An errno that does not map to any known I²C condition.
     Unknown { errno: i32 },
 }
 ```
+
+The two block-read errors are `#[non_exhaustive]` per variant, so a later release can add a
+field to either. A driver that reports more than 33 bytes for a block read does not reach
+`UnexpectedBlockLength`: `i2cdev` indexes its 34-byte buffer by the reported length and
+panics, while the transport's lock is held, so every later call on the transport panics
+too (a poisoned lock); open a new transport.
 
 ---
 
@@ -424,6 +491,14 @@ values are constructed directly and the output variant is asserted. This covers 
 named `I2cErrorKind` variant and the `Unknown { errno }` fallback without kernel
 involvement.
 
+**`read_block`** is tested against an in-memory device behind the crate-private
+`SmbusDevice` seam, which records each block read it is asked for: consecutive registers in
+one ioctl, the 32-byte maximum in one, an empty buffer with none, a 33-byte buffer refused
+with none, a result of another length an error with the buffer unchanged, a read from 0xF0
+ending at 0xFF as on `i2c-stub`, `EOPNOTSUPP` as `Unsupported` with no fallback, and ioctl
+errors mapped as for `read`; and, opened bytewise, one byte-data read per register, no
+length limit, wrapping past 0xFF, and stopping at the first error.
+
 No kernel involvement. Runs in CI on any Linux host.
 
 ### Tier 2: `i2c-stub` integration tests
@@ -431,13 +506,16 @@ No kernel involvement. Runs in CI on any Linux host.
 **`I2cDevTransport`** is tested against the Linux `i2c-stub` kernel module, which
 registers a fake I²C device at a specified address and exposes it as a real `/dev/i2c-N`
 device node. Transactions go through the full `I2C_SMBUS` ioctl path; the stub responds
-to SMBus byte-data reads and records writes.
+to SMBus byte-data reads and I2C block reads and records writes.
 
 This tier validates:
 - correct SMBus byte-data read (atomic combined write-then-read in a single ioctl),
 - correct SMBus byte-data write,
+- correct SMBus I2C block read (`read_block`): 9 bytes (the CED block), 2 bytes and the
+  32-byte maximum, each in one ioctl, and a 33-byte read refused,
 - slave address 0x54 is set at device open time,
-- an error is produced when a transaction targets an address not registered with the stub.
+- an error is produced when a transaction, byte or block read, targets an address not
+  registered with the stub.
 
 These tests require `i2c-stub` to be loaded (`modprobe i2c-stub`) and the calling process
 to have write permission on the resulting device node. They are gated behind a feature flag
@@ -446,7 +524,9 @@ for transport correctness and must be run before any release.
 
 **Error conditions not covered:** bus errors, clock stretch timeouts, and arbitration loss
 cannot be simulated via `i2c-stub`. `i2c-stub` always ACKs registered addresses; the only
-error condition it can produce is a NACK on an unregistered address. The mapping from
+error condition it can produce is a transfer to an unregistered address, which it reports
+as `ENODEV` (`AdapterGone`) rather than the `ENXIO` (`AddressNack`) of a real adapter's
+NACK. The mapping from
 `LinuxI2CError` to these variants is covered by the Tier 1 unit tests; exercising them
 end-to-end requires real misbehaving hardware.
 

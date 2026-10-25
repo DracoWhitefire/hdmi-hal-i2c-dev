@@ -5,7 +5,7 @@
 ## Clone and build
 
 ```sh
-git clone https://github.com/DracoWhitefire/hdmi-hal-i2c-dev.git
+git clone https://github.com/ashlar-display/hdmi-hal-i2c-dev.git
 cd hdmi-hal-i2c-dev
 cargo build
 ```
@@ -59,22 +59,47 @@ sudo usermod -aG i2c $USER
 ### Step 3 — Run the tests
 
 ```sh
-I2C_STUB_ADAPTER=N cargo test --locked --features integration
+I2C_STUB_ADAPTER=N cargo test --locked --features integration -- --nocapture
 ```
 
-### NACK test setup (optional)
+A test whose adapter variable is not set is skipped, not failed, and prints
+`skipped: <variable> not set`. `cargo test` hides the output of passing tests, so run with
+`--nocapture` to see which tests were skipped: a skipped test still reports `ok`.
 
-The NACK test requires a second adapter where address 0x54 is **not** registered.
-Load a second `i2c-stub` instance with a different address, find its adapter number `M`,
-and set `I2C_STUB_ADAPTER_NACK`:
+In CI and for a release, set `I2C_STUB_REQUIRED=1`: a test whose adapter variable is unset
+then fails instead of skipping, so a forgotten variable cannot pass for tier 2 coverage.
+Each pass then runs only its own tests:
 
 ```sh
-sudo modprobe i2c-stub chip_addr=0x55
-sudo chmod 0666 /dev/i2c-M
-I2C_STUB_ADAPTER=N I2C_STUB_ADAPTER_NACK=M cargo test --locked --features integration
+I2C_STUB_REQUIRED=1 I2C_STUB_ADAPTER=N cargo test --locked --features integration -- --skip slave_not_registered
 ```
 
-If `I2C_STUB_ADAPTER_NACK` is not set, the NACK test is skipped rather than failed.
+### NACK tests (a second pass)
+
+The two NACK tests need an adapter where nothing answers at 0x54, so that a read gets no
+acknowledgement. `i2c-stub` registers a single adapter, whatever `chip_addr` lists (up to
+ten addresses, all on that one bus), and a second `modprobe` of the loaded module changes
+nothing. So run them in a second pass, with the stub reloaded at another address:
+
+```sh
+sudo modprobe -r i2c-stub
+sudo modprobe i2c-stub chip_addr=0x55      # one stub bus, nothing at 0x54
+ls -lt /dev/i2c-* | head -3                # the stub's adapter number, M, may differ from N
+sudo chmod 0666 /dev/i2c-M
+I2C_STUB_ADAPTER_NACK=M cargo test --locked --features integration slave_not_registered -- --nocapture
+```
+
+(In CI and for a release, with `I2C_STUB_REQUIRED=1` too.) The test name filter runs only
+the two NACK tests. The byte-read one prints the error it got. Against `i2c-stub` the kind
+is `AdapterGone`: for an
+address with no chip the stub returns `ENODEV` (`i2c-stub.c`, `if (!chip) return
+-ENODEV;`), where a real adapter returns `ENXIO`, which the crate maps to `AddressNack`
+(`EIO`, `Unknown`, on `amdgpu`). The tests check only that the error is a `Transaction`
+error.
+
+Do not point `I2C_STUB_ADAPTER_NACK` at a real adapter instead: a DDC bus with an HDMI
+sink attached does answer at 0x54 (that is SCDC), and other buses belong to hardware that
+is better left alone.
 
 ### Unloading the stub
 

@@ -1,14 +1,15 @@
 [package]
 name = "hdmi-hal-i2c-dev"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Linux userspace hdmi-hal backend via /dev/i2c-N (i2c-dev)"
 readme = "README.md"
 license = "MPL-2.0"
-repository = "https://github.com/DracoWhitefire/hdmi-hal-i2c-dev"
-keywords = ["hdmi", "i2c", "linux", "hal", "scdc"]
-categories = ["hardware-support", "embedded"]
+repository = "https://github.com/ashlar-display/hdmi-hal-i2c-dev"
+homepage = "https://ashlar-display.org"
+keywords = ["ashlar", "hdmi", "i2c", "linux", "scdc"]
+categories = ["hardware-support", "embedded", "os::linux-apis"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -18,7 +19,7 @@ integration = []
 
 [dependencies]
 display-types = "0.4"
-hdmi-hal = "0.5"
+hdmi-hal = "0.6"
 i2cdev = "0.6.2"
 libc = "0.2"
 
