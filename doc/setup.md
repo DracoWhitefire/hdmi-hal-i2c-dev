@@ -5,7 +5,7 @@
 ## Clone and build
 
 ```sh
-git clone https://github.com/DracoWhitefire/hdmi-hal-i2c-dev.git
+git clone https://github.com/ashlar-display/hdmi-hal-i2c-dev.git
 cd hdmi-hal-i2c-dev
 cargo build
 ```
