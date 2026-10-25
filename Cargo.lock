@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "hdmi-hal-i2c-dev"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "display-types",
  "hdmi-hal",
